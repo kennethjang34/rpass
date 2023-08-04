@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
 fn eprint<T: std::fmt::Display>(msg: T) {
     let _ = writeln!(&mut io::stderr(), "{}", msg);
 }
@@ -80,19 +78,19 @@ fn main() {
             let encoded_message = encode_message(&response);
             send_message(&encoded_message);
         }
-        // let mut store = PasswordStore::new(
-        //     "test",
-        //     &Some(PathBuf::from("/Users/JANG/.password-store")),
-        //     &Some("F40F BF4B 0253 39DE A21D  3D2D 3E1D DD12 57F3 A8F1".to_string()),
-        //     &Some(PathBuf::from("/Users/JANG/")),
-        //     &None,
-        // &CryptoImpl::GpgMe,
-        // fingerprint: F40F BF4B 0253 39DE A21D  3D2D 3E1D DD12 57F3 A8F1
-        // &None,
-        // &Some([
-        //     0xf4, 0x0f, 0xbf, 0x4b, 0x02, 0x53, 0x39, 0xde, 0xa2, 0x1d, 0x3d, 0x2d, 0x3e, 0x1d,
-        //     0xdd, 0x12, 0x57, 0xf3, 0xa8, 0xf1,
-        // ]),
-        // );
+        let mut store = PasswordStore::new(
+            "test",
+            &Some(PathBuf::from("/Users/JANG/.password-store")),
+            &Some("F40F BF4B 0253 39DE A21D  3D2D 3E1D DD12 57F3 A8F1".to_string()),
+            &Some(PathBuf::from("/Users/JANG/")),
+            &None,
+            &CryptoImpl::GpgMe,
+            // fingerprint: F40F BF4B 0253 39DE A21D  3D2D 3E1D DD12 57F3 A8F1
+            &None,
+            // &Some([
+            //     0xf4, 0x0f, 0xbf, 0x4b, 0x02, 0x53, 0x39, 0xde, 0xa2, 0x1d, 0x3d, 0x2d, 0x3e, 0x1d,
+            //     0xdd, 0x12, 0x57, 0xf3, 0xa8, 0xf1,
+            // ]),
+        );
     }
 }
