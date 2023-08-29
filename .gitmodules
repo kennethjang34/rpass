@@ -1,0 +1,3 @@
+[submodule "browser-rpass"]
+	path = browser-rpass
+	url = git@github.com:kennethjang34/browser-rpass.git
