@@ -72,7 +72,6 @@ pub fn commit_with_passphrase(
             &FindSigningFingerprintStrategy::GIT,
             passphrase,
         )?;
-        eprintln!("sig: {:?}", sig);
 
         let commit = repo.commit_signed(commit_as_str, &sig, Some("gpgsig"))?;
 

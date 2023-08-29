@@ -1119,7 +1119,6 @@ impl PasswordEntry {
         }
 
         let message = format!("Edit password for {} using rpass", &self.name);
-        eprintln!("message: {}", message);
 
         store.add_and_commit(
             &[append_extension(PathBuf::from(&self.name), ".gpg")],

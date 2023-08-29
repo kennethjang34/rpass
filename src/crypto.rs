@@ -284,7 +284,6 @@ impl Crypto for GpgMe {
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
         let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
         let mut config = git2::Config::open_default()?;
-        eprintln!("config: {:?}", config);
         // eprintln!(
         //     "config: {:?}",
         //     config.set_str(
