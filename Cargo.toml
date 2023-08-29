@@ -39,10 +39,7 @@ tar = "0.4.38"
 criterion = "0.4.0"
 
 [workspace]
-
-members = [
-    "browser-extension"
-]
+exclude=["./browser-extension"]
 
 [[bench]]
 name = "library_benchmark"
