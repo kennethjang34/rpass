@@ -1,2 +1,2 @@
 cargo build
-cd ./browser-extension && source ./build.sh
+cd ./browser-rpass && source ./build.sh
