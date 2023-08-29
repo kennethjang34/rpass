@@ -58,14 +58,6 @@ pub fn commit_with_passphrase(
         )?;
 
         let commit_as_str = str::from_utf8(&commit_buf)?;
-        // eprintln!("commit_as_str: {:?}", commit_as_str);
-        // let decoded = hex::decode("F40FBF4B025339DEA21D3D2D3E1DDD1257F3A8F1").unwrap();
-        // let slice = decoded.as_slice();
-        // let arr = [slice.try_into().unwrap()];
-        // if valid_gpg_signing_keys.len() == 0 {
-        //     valid_gpg_signing_keys = &[arr];
-        // }
-
         let sig = crypto.sign_string_passphrase(
             commit_as_str,
             &[],
@@ -592,7 +584,7 @@ pub fn certificate_check(
     let Some(host_key) = cert.as_hostkey() else {
         // Return passthrough for TLS X509 certificates to use whatever validation
         // was done in git2.
-        return Ok(CertificateCheckStatus::CertificatePassthrough)
+        return Ok(CertificateCheckStatus::CertificatePassthrough);
     };
     // If a nonstandard port is in use, check for that first.
     // The fallback to check without a port is handled in the HostKeyNotFound handler.
@@ -779,10 +771,18 @@ impl KnownHost {
 }
 
 fn hashed_hostname_matches(host: &str, hashed: &str) -> bool {
-    let Some((b64_salt, b64_host)) = hashed.split_once('|') else { return false; };
-    let Ok(salt) = STANDARD.decode(b64_salt) else { return false; };
-    let Ok(hashed_host) = STANDARD.decode(b64_host) else { return false; };
-    let Ok(mut mac) = hmac::Hmac::<sha1::Sha1>::new_from_slice(&salt) else { return false; };
+    let Some((b64_salt, b64_host)) = hashed.split_once('|') else {
+        return false;
+    };
+    let Ok(salt) = STANDARD.decode(b64_salt) else {
+        return false;
+    };
+    let Ok(hashed_host) = STANDARD.decode(b64_host) else {
+        return false;
+    };
+    let Ok(mut mac) = hmac::Hmac::<sha1::Sha1>::new_from_slice(&salt) else {
+        return false;
+    };
     mac.update(host.as_bytes());
     let result = mac.finalize().into_bytes();
     hashed_host == result[..]
@@ -937,10 +937,16 @@ fn parse_known_hosts_line(line: &str, location: KnownHostLocation) -> Option<Kno
         return None;
     }
     let mut parts = line.split([' ', '\t']).filter(|s| !s.is_empty());
-    let Some(patterns) = parts.next() else { return None };
-    let Some(key_type) = parts.next() else { return None };
+    let Some(patterns) = parts.next() else {
+        return None;
+    };
+    let Some(key_type) = parts.next() else {
+        return None;
+    };
     let Some(key) = parts.next() else { return None };
-    let Ok(key) = STANDARD.decode(key) else { return None };
+    let Ok(key) = STANDARD.decode(key) else {
+        return None;
+    };
     Some(KnownHost {
         location,
         patterns: patterns.to_string(),

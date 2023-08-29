@@ -284,14 +284,6 @@ impl Crypto for GpgMe {
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
         let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
         let mut config = git2::Config::open_default()?;
-        // eprintln!(
-        //     "config: {:?}",
-        //     config.set_str(
-        //         "user.signingkey",
-        //         "F40FBF4B025339DEA21D3D2D3E1DDD1257F3A8F1"
-        //     )
-        // );
-
         let signing_key = match strategy {
             FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
             FindSigningFingerprintStrategy::GPG => {
