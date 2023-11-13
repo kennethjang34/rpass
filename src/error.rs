@@ -1,3 +1,5 @@
+use serde::Deserialize;
+use serde::Serialize;
 use std::{
     io, path, string,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -210,6 +212,23 @@ impl std::fmt::Display for Error {
             Self::TotpUrlError(_err) => write!(f, "TOTP url error"),
             Self::SystemTimeError(err) => write!(f, "{err}"),
         }
+    }
+}
+impl Serialize for Error {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let err = format!("{}", self);
+        serializer.serialize_str(&err)
+    }
+}
+impl<'de> Deserialize<'de> for Error {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let err = String::deserialize(deserializer)?;
+        Ok(Self::GenericDyn(err))
     }
 }
 

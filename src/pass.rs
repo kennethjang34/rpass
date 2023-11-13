@@ -14,6 +14,8 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use log::*;
+use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -29,11 +31,12 @@ use chrono::prelude::*;
 use totp_rs::TOTP;
 
 use crate::{
-    crypto::{Crypto, CryptoImpl, GpgMe, PassphraseProvider, VerificationError},
+    crypto::{Crypto, CryptoImpl, GpgMe, VerificationError},
     git::{
-        add_and_commit_internal, commit, commit_with_passphrase, find_last_commit, init_git_repo,
-        match_with_parent, move_and_commit, push_password_if_match, read_git_meta_data,
-        remove_and_commit, remove_and_commit_passphrase, verify_git_signature,
+        add_and_commit_internal, add_and_commit_internal_with_passphrase, commit_with_passphrase,
+        find_last_commit, init_git_repo, match_with_parent, move_and_commit,
+        push_password_if_match, read_git_meta_data, remove_and_commit,
+        remove_and_commit_passphrase, verify_git_signature,
     },
 };
 pub use crate::{
@@ -101,7 +104,7 @@ impl PasswordStore {
         home: &Option<PathBuf>,
         style_file: &Option<PathBuf>,
         crypto_impl: &CryptoImpl,
-        own_fingerprint: &Option<[u8; 20]>,
+        _own_fingerprint: &Option<[u8; 20]>,
         // passphrase: &Option<String>,
     ) -> Result<Self> {
         let pass_home = password_dir_raw(password_store_dir, home);
@@ -370,6 +373,53 @@ impl PasswordStore {
             }
         }
     }
+    pub fn new_password_file_with_passphrase(
+        &mut self,
+        path_end: &str,
+        content: &str,
+        passphrase: Option<String>,
+    ) -> Result<PasswordEntry> {
+        let mut path = self.root.clone();
+
+        let c_path = std::fs::canonicalize(path.as_path())?;
+
+        let path_iter = &mut path_end.split('/').peekable();
+
+        while let Some(p) = path_iter.next() {
+            if path_iter.peek().is_some() {
+                path.push(p);
+                let c_file_res = std::fs::canonicalize(path.as_path());
+                if let Ok(c_file) = c_file_res {
+                    if !c_file.starts_with(c_path.as_path()) {
+                        return Err(Error::Generic(
+                            "trying to write outside of password store directory",
+                        ));
+                    }
+                }
+                if !path.exists() {
+                    std::fs::create_dir(&path)?;
+                }
+            } else {
+                path.push(format!("{p}.gpg"));
+            }
+        }
+
+        if path.exists() {
+            return Err(Error::Generic("file already exist"));
+        }
+
+        match self.new_password_file_internal_with_passphrase(&path, path_end, content, passphrase)
+        {
+            Ok(pe) => Ok(pe),
+            Err(err) => {
+                // try to remove the file we created, as cleanup
+                let _ = std::fs::remove_file(path);
+
+                // but always return the original error
+                Err(err)
+            }
+        }
+    }
 
     fn new_password_file_internal(
         &mut self,
@@ -417,6 +467,54 @@ impl PasswordStore {
             }
         }
     }
+    fn new_password_file_internal_with_passphrase(
+        &mut self,
+        path: &Path,
+        path_end: &str,
+        content: &str,
+        passphrase: Option<String>,
+    ) -> Result<PasswordEntry> {
+        let mut file = File::create(path)?;
+
+        if !self.valid_gpg_signing_keys.is_empty() {
+            self.verify_gpg_id_files()?;
+        }
+
+        let recipients = self.recipients_for_path(path)?;
+        let output = self.crypto.encrypt_string(content, &recipients)?;
+
+        if let Err(why) = file.write_all(&output) {
+            return Err(Error::from(why));
+        }
+        match self.repo() {
+            Err(_) => {
+                self.passwords.push(PasswordEntry::load_from_filesystem(
+                    &self.root,
+                    &append_extension(PathBuf::from(path_end), ".gpg"),
+                ));
+                Ok(PasswordEntry::load_from_filesystem(
+                    &self.root,
+                    &append_extension(PathBuf::from(path_end), ".gpg"),
+                ))
+            }
+            Ok(repo) => {
+                let message = format!("Add password for {path_end} using rpass");
+
+                add_and_commit_internal_with_passphrase(
+                    &repo,
+                    &[append_extension(PathBuf::from(path_end), ".gpg")],
+                    &message,
+                    self.crypto.as_ref(),
+                    passphrase,
+                )?;
+
+                self.passwords
+                    .push(PasswordEntry::load_from_git(&self.root, path, &repo, self));
+
+                Ok(PasswordEntry::load_from_git(&self.root, path, &repo, self))
+            }
+        }
+    }
 
     /// loads the list of passwords from disk again
     /// # Errors
@@ -437,7 +535,7 @@ impl PasswordStore {
             return true;
         }
 
-        match git2::Config::open_default() {
+        match self.repo().unwrap().config() {
             Err(_) => false,
             Ok(config) => {
                 let user_name = config.get_string("user.name");
@@ -613,7 +711,7 @@ impl PasswordStore {
             new_dir.pop();
         }
 
-        Err(Error::Generic("No .gpg-id file found"))
+        Err(Error::Generic("No .gpg-id file found in {path}"))
     }
 
     fn visit_dirs(dir: &Path, result: &mut Vec<PathBuf>) -> Result<()> {
@@ -728,6 +826,9 @@ impl PasswordStore {
 
         Ok(())
     }
+    pub fn verify_passphrase(&self, username: Option<String>, passphrase: &str) -> Result<bool> {
+        self.crypto.verify_passphrase(username, passphrase)
+    }
 
     /// Add a file to the store, and commit it to the supplied git repository.
     /// # Errors
@@ -810,7 +911,7 @@ impl PasswordStore {
         let mut file = std::fs::File::create(&new_path)?;
         let secret = self
             .crypto
-            .decrypt_string(&std::fs::read(&old_path)?, None)?;
+            .decrypt_string(&std::fs::read(&old_path)?, passphrase.clone())?;
         let new_recipients = Recipient::all_recipients(
             &self.recipients_file_for_dir(&new_path)?,
             self.crypto.as_ref(),
@@ -918,7 +1019,7 @@ impl GitLogLine {
 }
 
 /// The state of a password, with regards to git
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum RepositoryStatus {
     /// The password is in git
@@ -934,10 +1035,12 @@ pub enum RepositoryStatus {
 #[derive(Clone, Debug, Default)]
 pub struct PasswordEntry {
     /// Name of the entry, (from relative path to password)
+    // #[serde(rename = "username")]
     pub name: String,
     /// Absolute path to the password file
     pub path: PathBuf,
     /// if we have a git repo, then commit time
+    // #[serde(rename = "updated_at")]
     pub updated: Option<DateTime<Local>>,
     /// if we have a git repo, then the name of the committer
     pub committed_by: Option<String>,
@@ -945,6 +1048,23 @@ pub struct PasswordEntry {
     pub signature_status: Option<SignatureStatus>,
     /// describes if the file is in a repository or not
     pub is_in_git: RepositoryStatus,
+}
+
+impl Serialize for PasswordEntry {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("PasswordEntry", 6)?;
+        state.serialize_field("username", &self.get_username())?;
+        state.serialize_field("id", &self.path)?;
+        state.serialize_field("updated_at", &self.updated)?;
+        state.serialize_field("committed_by", &self.committed_by)?;
+        state.serialize_field("signature_status", &self.signature_status)?;
+        state.serialize_field("is_in_git", &self.is_in_git)?;
+        state.serialize_field("domain", &self.get_domain())?;
+        state.end()
+    }
 }
 
 fn to_name(relpath: &Path) -> String {
@@ -978,6 +1098,34 @@ impl PasswordEntry {
             signature_status: signature_status.ok(),
             is_in_git,
         }
+    }
+    pub fn get_username(&self) -> String {
+        let name_path = Path::new(&self.name);
+        let username = name_path
+            .file_name()
+            .map_or(name_path.to_str().unwrap().to_owned(), |v| {
+                if v == Path::new("") {
+                    name_path.to_str().unwrap().to_owned()
+                } else {
+                    v.to_str().unwrap().to_owned()
+                }
+            });
+        username
+    }
+    pub fn get_domain(&self) -> String {
+        let name_path = Path::new(&self.name);
+        let domain =
+            name_path.parent().map_or(
+                name_path,
+                |v| {
+                    if v == Path::new("") {
+                        name_path
+                    } else {
+                        v
+                    }
+                },
+            );
+        domain.to_string_lossy().to_string()
     }
 
     /// Consumes an `PasswordEntry`, and returns a new one with a new name
@@ -1266,7 +1414,34 @@ pub fn search(store: &PasswordStore, query: &str) -> Vec<PasswordEntry> {
         normalized(s).as_str().contains(normalized(q).as_str())
     }
     let matching = passwords.iter().filter(|p| matches(&p.name, query));
-    matching.cloned().collect()
+    let res: Vec<PasswordEntry> = matching.cloned().collect();
+    return res;
+}
+pub fn get_entries_with_path(store: &PasswordStore, path: Option<String>) -> Vec<PasswordEntry> {
+    let passwords = &store.passwords;
+    if let Some(path) = path {
+        fn normalized(s: &str) -> String {
+            s.to_lowercase()
+        }
+        fn matches(s: &str, q: &str) -> bool {
+            normalized(s).as_str() == normalized(q).as_str()
+        }
+        let matching = passwords.iter().filter(|p| {
+            let name_with_path = Path::new(&p.name);
+            let domain_name = name_with_path.parent().map_or(name_with_path, |v| {
+                if v == Path::new("") {
+                    name_with_path
+                } else {
+                    v
+                }
+            });
+            matches(&path, domain_name.to_str().unwrap())
+        });
+        let res: Vec<PasswordEntry> = matching.cloned().collect();
+        return res;
+    } else {
+        return passwords.clone();
+    }
 }
 
 /// Determine password directory
@@ -1283,6 +1458,10 @@ pub fn password_dir(
 
 /// Determine password directory
 pub fn password_dir_raw(password_store_dir: &Option<PathBuf>, home: &Option<PathBuf>) -> PathBuf {
+    info!(
+        "password_store_dir: {:?}, home: {:?}",
+        password_store_dir, home
+    );
     // If a directory is provided via env var, use it
     match password_store_dir.as_ref() {
         Some(p) => p.clone(),
@@ -1441,6 +1620,7 @@ pub fn read_config(
     if settings_file_exists(home, xdg_config_home) {
         settings.merge(file_settings(&config_file_location))?;
     }
+    info!("settings: {:?}", settings);
 
     if home_exists(home, &settings) {
         settings.merge(home_settings(home)?)?;

@@ -11,7 +11,7 @@ edition = '2021'
 [dependencies]
 glob = "0.3.1"
 gpgme = "0.11.0"
-chrono = { version = "0.4", default_features = false, features = ["clock"] }
+chrono = { version = "0.4", default_features = false, features = ["clock","serde"] }
 git2 = "0.17.1"
 rand = "0.8.5"
 whoami = "1.4.0"
@@ -26,6 +26,8 @@ base64 = "0.21.0"
 sha2 = "0.10.6"
 sha1 = "0.10.5"
 hmac = "0.12.1"
+serde = { version = "1.0.130", features = ["derive"] }
+log= "0.4.14"
 
 [dependencies.config]
 version = "0.11.0"
@@ -41,12 +43,12 @@ criterion = "0.4.0"
 [workspace]
 exclude=["./browser-extension"]
 
-[[bench]]
-name = "library_benchmark"
-harness = false
+# [[bench]]
+# name = "library_benchmark"
+# harness = false
 
-[profile.release]
-lto = true
-codegen-units = 1
-strip = true
-debug = false
+# [profile.release]
+# lto = true
+# codegen-units = 1
+# strip = true
+# debug = false

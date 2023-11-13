@@ -10,10 +10,11 @@ use hex::FromHex;
 
 use crate::crypto::FindSigningFingerprintStrategy;
 pub use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 
 /// A git commit for a password might be signed by a gpg key, and this signature's verification
 /// state is one of these values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SignatureStatus {
     /// Everything is fine with the signature, corresponds to the gpg status of VALID

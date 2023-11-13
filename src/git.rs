@@ -1,3 +1,5 @@
+use log::*;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Display, Write},
     path::{Path, PathBuf},
@@ -63,6 +65,7 @@ pub fn commit_with_passphrase(
             &[],
             &FindSigningFingerprintStrategy::GIT,
             passphrase,
+            repo.config().ok(),
         )?;
 
         let commit = repo.commit_signed(commit_as_str, &sig, Some("gpgsig"))?;
@@ -191,6 +194,41 @@ pub fn add_and_commit_internal(
 
     Ok(oid)
 }
+pub fn add_and_commit_internal_with_passphrase(
+    repo: &git2::Repository,
+    paths: &[PathBuf],
+    message: &str,
+    crypto: &(dyn Crypto + Send),
+    passphrase: Option<String>,
+) -> Result<git2::Oid> {
+    let mut index = repo.index()?;
+    for path in paths {
+        index.add_path(path)?;
+        index.write()?;
+    }
+    let signature = repo.signature()?;
+
+    let mut parents = vec![];
+    let parent_commit;
+    if let Ok(pc) = find_last_commit(repo) {
+        parent_commit = pc;
+        parents.push(&parent_commit);
+    }
+    let oid = index.write_tree()?;
+    let tree = repo.find_tree(oid)?;
+
+    let oid = commit_with_passphrase(
+        repo,
+        &signature,
+        message,
+        &tree,
+        &parents,
+        crypto,
+        passphrase.as_ref().unwrap(),
+    )?;
+
+    Ok(oid)
+}
 
 /// Remove a file from the store, and commit the deletion to the supplied git repository.
 pub fn remove_and_commit(
@@ -298,13 +336,14 @@ pub fn move_and_commit(
     }
     let tree = repo.find_tree(oid)?;
 
-    let oid = commit(
+    let oid = commit_with_passphrase(
         &repo,
         &signature,
         message,
         &tree,
         &parents,
         store.get_crypto(),
+        &passphrase.unwrap_or_default(),
     )?;
 
     Ok(oid)
@@ -731,14 +770,14 @@ impl From<anyhow::Error> for KnownHostError {
 }
 
 /// The location where a host key was located.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum KnownHostLocation {
     /// Loaded from a file from disk.
     File { path: PathBuf, lineno: u32 },
 }
 
 /// A single known host entry.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct KnownHost {
     location: KnownHostLocation,
     /// The hostname. May be comma separated to match multiple hosts.
