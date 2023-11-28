@@ -1302,7 +1302,7 @@ fn update() -> Result<()> {
         user_home: None,
     };
 
-    let res = pe.update("new content".to_owned(), &store);
+    // let res = pe.update("new content".to_owned(), &store,passphrase: None);
 
     assert_eq!(false, res.is_err());
 
@@ -1602,7 +1602,7 @@ fn test_move_and_commit_signed() -> Result<()> {
 fn test_search() -> Result<()> {
     let p1 = PasswordEntry {
         name: "no/match/check".to_owned(),
-        path: Default::default(),
+        file_path: Default::default(),
         updated: None,
         committed_by: None,
         signature_status: None,
@@ -1610,7 +1610,7 @@ fn test_search() -> Result<()> {
     };
     let p2 = PasswordEntry {
         name: "dir/test/middle".to_owned(),
-        path: Default::default(),
+        file_path: Default::default(),
         updated: None,
         committed_by: None,
         signature_status: None,
@@ -1618,7 +1618,7 @@ fn test_search() -> Result<()> {
     };
     let p3 = PasswordEntry {
         name: " space test ".to_owned(),
-        path: Default::default(),
+        file_path: Default::default(),
         updated: None,
         committed_by: None,
         signature_status: None,
@@ -1954,7 +1954,7 @@ fn test_new_password_file() -> Result<()> {
     assert_eq!(false, result.committed_by.is_some());
     assert_eq!(false, result.updated.is_some());
     assert_eq!("test/file", result.name);
-    assert_eq!(td.path().join("test").join("file.gpg"), result.path);
+    assert_eq!(td.path().join("test").join("file.gpg"), result.file_path);
 
     Ok(())
 }

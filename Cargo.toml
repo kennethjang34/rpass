@@ -28,6 +28,7 @@ sha1 = "0.10.5"
 hmac = "0.12.1"
 serde = { version = "1.0.130", features = ["derive"] }
 log= "0.4.14"
+uuid = {version="1.6.1", features = ["v4","macro-diagnostics",]}
 
 [dependencies.config]
 version = "0.11.0"

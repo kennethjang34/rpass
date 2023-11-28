@@ -1,4 +1,4 @@
-use log::*;
+use log::error;
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter, Write},
@@ -307,17 +307,12 @@ impl Crypto for GpgMe {
         let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
         let config = config.unwrap_or_else(|| git2::Config::open_default().unwrap());
         let signing_key = match strategy {
-            FindSigningFingerprintStrategy::GIT => {
-                debug!("using git signing key");
-                config.get_string("user.signingkey")?
-            }
+            FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
             FindSigningFingerprintStrategy::GPG => {
-                debug!("using gpg signing key");
                 let mut key_opt: Option<gpgme::Key> = None;
 
                 for key_id in valid_gpg_signing_keys {
                     let key_res = ctx.get_key(hex::encode_upper(key_id));
-                    debug!("key_res: {:?}", key_res);
 
                     if let Ok(r) = key_res {
                         key_opt = Some(r);

@@ -23,9 +23,10 @@ use std::{
     fs::{create_dir_all, File},
     io::prelude::*,
     path::{Path, PathBuf},
-    str,
+    str::{self, FromStr},
     sync::{Arc, Mutex},
 };
+use uuid::Uuid;
 
 use chrono::prelude::*;
 use totp_rs::TOTP;
@@ -105,7 +106,6 @@ impl PasswordStore {
         style_file: &Option<PathBuf>,
         crypto_impl: &CryptoImpl,
         _own_fingerprint: &Option<[u8; 20]>,
-        // passphrase: &Option<String>,
     ) -> Result<Self> {
         let pass_home = password_dir_raw(password_store_dir, home);
         if !pass_home.exists() {
@@ -807,7 +807,10 @@ impl PasswordStore {
         let mut names: Vec<PathBuf> = Vec::new();
         for entry in self.all_passwords()? {
             entry.update_internal(&entry.secret(self, None)?, self)?;
-            names.push(append_extension(PathBuf::from(&entry.name), ".gpg"));
+            names.push(append_extension(
+                PathBuf::from(&entry.id.to_string()),
+                ".gpg",
+            ));
         }
         names.push(PathBuf::from(".gpg-id"));
 
@@ -934,7 +937,7 @@ impl PasswordStore {
         let passwords = &mut self.passwords;
         let mut index = usize::MAX;
         for (i, entry) in passwords.iter().enumerate() {
-            if entry.name == old_name {
+            if entry.id.to_string() == old_name {
                 index = i;
             }
         }
@@ -1034,11 +1037,12 @@ pub enum RepositoryStatus {
 /// One password in the password store
 #[derive(Clone, Debug, Default)]
 pub struct PasswordEntry {
+    pub id: Uuid,
     /// Name of the entry, (from relative path to password)
     // #[serde(rename = "username")]
-    pub name: String,
+    // pub name: String,
     /// Absolute path to the password file
-    pub path: PathBuf,
+    pub file_path: PathBuf,
     /// if we have a git repo, then commit time
     // #[serde(rename = "updated_at")]
     pub updated: Option<DateTime<Local>>,
@@ -1056,13 +1060,11 @@ impl Serialize for PasswordEntry {
         S: serde::Serializer,
     {
         let mut state = serializer.serialize_struct("PasswordEntry", 6)?;
-        state.serialize_field("username", &self.get_username())?;
-        state.serialize_field("id", &self.path)?;
+        state.serialize_field("id", &self.id.to_string())?;
         state.serialize_field("updated_at", &self.updated)?;
         state.serialize_field("committed_by", &self.committed_by)?;
         state.serialize_field("signature_status", &self.signature_status)?;
         state.serialize_field("is_in_git", &self.is_in_git)?;
-        state.serialize_field("domain", &self.get_domain())?;
         state.end()
     }
 }
@@ -1090,9 +1092,10 @@ impl PasswordEntry {
         signature_status: Result<SignatureStatus>,
         is_in_git: RepositoryStatus,
     ) -> Self {
+        let uuid = Uuid::from_str(&relpath.file_stem().unwrap().to_str().unwrap()).unwrap();
         Self {
-            name: to_name(relpath),
-            path: base.join(relpath),
+            id: Uuid::from_str(&relpath.file_stem().unwrap().to_str().unwrap()).unwrap(),
+            file_path: base.join(relpath),
             updated: update_time.ok(),
             committed_by: committed_by.ok(),
             signature_status: signature_status.ok(),
@@ -1100,39 +1103,43 @@ impl PasswordEntry {
         }
     }
     pub fn get_username(&self) -> String {
-        let name_path = Path::new(&self.name);
-        let username = name_path
-            .file_name()
-            .map_or(name_path.to_str().unwrap().to_owned(), |v| {
-                if v == Path::new("") {
-                    name_path.to_str().unwrap().to_owned()
-                } else {
-                    v.to_str().unwrap().to_owned()
-                }
-            });
-        username
+        todo!()
+        // let file_name = self.id.to_string();
+        // let name_path = Path::new(&file_name);
+        // let username = name_path
+        //     .file_name()
+        //     .map_or(name_path.to_str().unwrap().to_owned(), |v| {
+        //         if v == Path::new("") {
+        //             name_path.to_str().unwrap().to_owned()
+        //         } else {
+        //             v.to_str().unwrap().to_owned()
+        //         }
+        //     });
+        // username
     }
     pub fn get_domain(&self) -> String {
-        let name_path = Path::new(&self.name);
-        let domain =
-            name_path.parent().map_or(
-                name_path,
-                |v| {
-                    if v == Path::new("") {
-                        name_path
-                    } else {
-                        v
-                    }
-                },
-            );
-        domain.to_string_lossy().to_string()
+        todo!()
+        // let file_name = self.id.to_string();
+        // let name_path = Path::new(&file_name);
+        // let domain =
+        //     name_path.parent().map_or(
+        //         name_path,
+        //         |v| {
+        //             if v == Path::new("") {
+        //                 name_path
+        //             } else {
+        //                 v
+        //             }
+        //         },
+        //     );
+        // domain.to_string_lossy().to_string()
     }
 
     /// Consumes an `PasswordEntry`, and returns a new one with a new name
     pub fn with_new_name(old: Self, base: &Path, relpath: &Path) -> Self {
         Self {
-            name: to_name(relpath),
-            path: base.join(relpath),
+            id: old.id,
+            file_path: base.join(relpath),
             updated: old.updated,
             committed_by: old.committed_by,
             signature_status: old.signature_status,
@@ -1166,9 +1173,11 @@ impl PasswordEntry {
 
     /// creates a `PasswordEntry` based on data in the filesystem
     pub fn load_from_filesystem(base: &Path, relpath: &Path) -> Self {
+        let filename =
+            uuid::Uuid::from_str(&relpath.file_stem().unwrap().to_str().unwrap()).unwrap();
         Self {
-            name: to_name(relpath),
-            path: base.join(relpath),
+            id: filename,
+            file_path: base.join(relpath),
             updated: None,
             committed_by: None,
             signature_status: None,
@@ -1180,12 +1189,12 @@ impl PasswordEntry {
     /// # Errors
     /// Returns an `Err` if the path is empty
     pub fn secret(&self, store: &PasswordStore, passphrase: Option<String>) -> Result<String> {
-        let s = fs::metadata(&self.path)?;
+        let s = fs::metadata(&self.file_path)?;
         if s.len() == 0 {
             return Err(Error::Generic("empty password file"));
         }
 
-        let content = fs::read(&self.path)?;
+        let content = fs::read(&self.file_path)?;
         store.crypto.decrypt_string(&content, passphrase)
     }
 
@@ -1225,10 +1234,10 @@ impl PasswordEntry {
             store.verify_gpg_id_files()?;
         }
 
-        let recipients = store.recipients_for_path(&self.path)?;
+        let recipients = store.recipients_for_path(&self.file_path)?;
         let ciphertext = store.crypto.encrypt_string(secret, &recipients)?;
-
-        let mut output = File::create(&self.path)?;
+        let mut output = File::create(&self.file_path)?;
+        // panic!("file_path: {:?}", &self.file_path);
         output.write_all(&ciphertext)?;
         Ok(())
     }
@@ -1237,24 +1246,27 @@ impl PasswordEntry {
     /// is supplied.
     /// # Errors
     /// Returns an `Err` if the update fails.
-    pub fn update(&self, secret: String, store: &PasswordStore) -> Result<()> {
-        self.update_internal(&secret, store)?;
-
-        if store.repo().is_err() {
-            return Ok(());
-        }
-
-        let message = format!("Edit password for {} using rpass", &self.name);
-
-        store.add_and_commit(
-            &[append_extension(PathBuf::from(&self.name), ".gpg")],
-            &message,
-            None,
-        )?;
-
-        Ok(())
-    }
-    pub fn update_with_passphrase(
+    // pub fn update(&self, secret: String, store: &PasswordStore) -> Result<()> {
+    //     self.update_internal(&secret, store)?;
+    //
+    //     if store.repo().is_err() {
+    //         return Ok(());
+    //     }
+    //
+    //     let message = format!("Edit password for {} using rpass", &self.id);
+    //
+    //     store.add_and_commit(
+    //         &[append_extension(
+    //             PathBuf::from(&self.id.to_string()),
+    //             ".gpg",
+    //         )],
+    //         &message,
+    //         None,
+    //     )?;
+    //
+    //     Ok(())
+    // }
+    pub fn update(
         &self,
         secret: String,
         store: &PasswordStore,
@@ -1266,10 +1278,13 @@ impl PasswordEntry {
             return Ok(());
         }
 
-        let message = format!("Edit password for {} using rpass", &self.name);
+        let message = format!("Edit content of entry with id: {}", &self.id);
 
         store.add_and_commit(
-            &[append_extension(PathBuf::from(&self.name), ".gpg")],
+            &[append_extension(
+                PathBuf::from(&self.id.to_string()),
+                ".gpg",
+            )],
             &message,
             passphrase,
         )?;
@@ -1281,16 +1296,19 @@ impl PasswordEntry {
     /// # Errors
     /// Returns an `Err` if the remove fails.
     pub fn delete_file(&self, store: &PasswordStore) -> Result<()> {
-        std::fs::remove_file(&self.path)?;
+        std::fs::remove_file(&self.file_path)?;
 
         if store.repo().is_err() {
             return Ok(());
         }
-        let message = format!("Removed password file for {} using rpass", &self.name);
+        let message = format!("Removed password file for {} using rpass", &self.id);
 
         remove_and_commit(
             store,
-            &[append_extension(PathBuf::from(&self.name), ".gpg")],
+            &[append_extension(
+                PathBuf::from(&self.id.to_string()),
+                ".gpg",
+            )],
             &message,
         )?;
         Ok(())
@@ -1300,16 +1318,20 @@ impl PasswordEntry {
         store: &PasswordStore,
         passphrase: Option<String>,
     ) -> Result<()> {
-        std::fs::remove_file(&self.path)?;
+        std::fs::remove_file(&self.file_path)?;
 
         if store.repo().is_err() {
+            warn!("repo is err,");
             return Ok(());
         }
-        let message = format!("Removed password file for {} using rpass", &self.name);
+        let message = format!("Removed password file for {} using rpass", &self.id);
 
         remove_and_commit_passphrase(
             store,
-            &[append_extension(PathBuf::from(&self.name), ".gpg")],
+            &[append_extension(
+                PathBuf::from(&self.id.to_string()),
+                ".gpg",
+            )],
             &message,
             &passphrase.unwrap_or("".to_string()),
         )?;
@@ -1336,7 +1358,7 @@ impl PasswordEntry {
 
         revwalk.push_head()?;
 
-        let p = self.path.strip_prefix(&store.root)?;
+        let p = self.file_path.strip_prefix(&store.root)?;
         let ps = git2::Pathspec::new(vec![&p])?;
 
         let mut diffopts = git2::DiffOptions::new();
@@ -1413,7 +1435,9 @@ pub fn search(store: &PasswordStore, query: &str) -> Vec<PasswordEntry> {
     fn matches(s: &str, q: &str) -> bool {
         normalized(s).as_str().contains(normalized(q).as_str())
     }
-    let matching = passwords.iter().filter(|p| matches(&p.name, query));
+    let matching = passwords
+        .iter()
+        .filter(|p| matches(&p.id.to_string(), query));
     let res: Vec<PasswordEntry> = matching.cloned().collect();
     return res;
 }
@@ -1427,7 +1451,9 @@ pub fn get_entries_with_path(store: &PasswordStore, path: Option<String>) -> Vec
             normalized(s).as_str() == normalized(q).as_str()
         }
         let matching = passwords.iter().filter(|p| {
-            let name_with_path = Path::new(&p.name);
+            let file_name = p.id.to_string();
+            let name_with_path = Path::new(&file_name);
+            // let name_with_path = Path::new(&p.id.to_string());
             let domain_name = name_with_path.parent().map_or(name_with_path, |v| {
                 if v == Path::new("") {
                     name_with_path
@@ -1458,10 +1484,6 @@ pub fn password_dir(
 
 /// Determine password directory
 pub fn password_dir_raw(password_store_dir: &Option<PathBuf>, home: &Option<PathBuf>) -> PathBuf {
-    info!(
-        "password_store_dir: {:?}, home: {:?}",
-        password_store_dir, home
-    );
     // If a directory is provided via env var, use it
     match password_store_dir.as_ref() {
         Some(p) => p.clone(),
@@ -1620,7 +1642,6 @@ pub fn read_config(
     if settings_file_exists(home, xdg_config_home) {
         settings.merge(file_settings(&config_file_location))?;
     }
-    info!("settings: {:?}", settings);
 
     if home_exists(home, &settings) {
         settings.merge(home_settings(home)?)?;
