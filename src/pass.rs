@@ -1038,13 +1038,8 @@ pub enum RepositoryStatus {
 #[derive(Clone, Debug, Default)]
 pub struct PasswordEntry {
     pub id: Uuid,
-    /// Name of the entry, (from relative path to password)
-    // #[serde(rename = "username")]
-    // pub name: String,
-    /// Absolute path to the password file
     pub file_path: PathBuf,
     /// if we have a git repo, then commit time
-    // #[serde(rename = "updated_at")]
     pub updated: Option<DateTime<Local>>,
     /// if we have a git repo, then the name of the committer
     pub committed_by: Option<String>,
@@ -1092,7 +1087,6 @@ impl PasswordEntry {
         signature_status: Result<SignatureStatus>,
         is_in_git: RepositoryStatus,
     ) -> Self {
-        let uuid = Uuid::from_str(&relpath.file_stem().unwrap().to_str().unwrap()).unwrap();
         Self {
             id: Uuid::from_str(&relpath.file_stem().unwrap().to_str().unwrap()).unwrap(),
             file_path: base.join(relpath),
@@ -1242,30 +1236,6 @@ impl PasswordEntry {
         Ok(())
     }
 
-    /// Updates the password store entry with new content, and commits those to git if a repository
-    /// is supplied.
-    /// # Errors
-    /// Returns an `Err` if the update fails.
-    // pub fn update(&self, secret: String, store: &PasswordStore) -> Result<()> {
-    //     self.update_internal(&secret, store)?;
-    //
-    //     if store.repo().is_err() {
-    //         return Ok(());
-    //     }
-    //
-    //     let message = format!("Edit password for {} using rpass", &self.id);
-    //
-    //     store.add_and_commit(
-    //         &[append_extension(
-    //             PathBuf::from(&self.id.to_string()),
-    //             ".gpg",
-    //         )],
-    //         &message,
-    //         None,
-    //     )?;
-    //
-    //     Ok(())
-    // }
     pub fn update(
         &self,
         secret: String,
