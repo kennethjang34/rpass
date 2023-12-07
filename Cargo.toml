@@ -8,6 +8,9 @@ authors = ["kennethjang34"]
 license = "GPL-3.0-only"
 edition = '2021'
 
+[lib]
+crate-type = ["dylib", "rlib"]
+
 [dependencies]
 glob = "0.3.1"
 gpgme = "0.11.0"
@@ -19,15 +22,13 @@ toml = "0.7.3"
 reqwest = { version = "0.11.17", features = ["blocking"] }
 hex = "0.4.3"
 totp-rs = { version = "5.0.1", features = ["otpauth"] }
-sequoia-openpgp = "1.16.0"
 anyhow = "1.0.71"
-sequoia-ipc = "0.30.1"
 base64 = "0.21.0"
 sha2 = "0.10.6"
 sha1 = "0.10.5"
 hmac = "0.12.1"
 serde = { version = "1.0.130", features = ["derive"] }
-log= "0.4.14"
+log={version="0.4", features=["max_level_trace", "release_max_level_warn"]}
 uuid = {version="1.6.1", features = ["v4","macro-diagnostics",]}
 
 [dependencies.config]
