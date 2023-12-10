@@ -1,3 +1,5 @@
 target
 benches
 testres
+.vim
+.DS_Store
