@@ -1,7 +1,7 @@
 use log::error;
 use std::{
     collections::HashMap,
-    fmt::{Display, Formatter, Write},
+    fmt::{Debug, Display, Formatter, Write},
     panic::RefUnwindSafe,
     path::Path,
 };
@@ -131,12 +131,12 @@ impl Key for GpgMeKey {
 }
 
 /// All operations that can be done through pgp, either with gpgme.
-pub trait Crypto {
+pub trait Crypto: Debug {
     /// Reads a file and decrypts it
     /// # Errors
     /// Will return `Err` if decryption fails, for example if the current user isn't the
     /// recipient of the message.
-    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<String>) -> Result<String>;
+    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<&str>) -> Result<String>;
     /// Encrypts a string
     /// # Errors
     /// Will return `Err` if encryption fails, for example if the current users key
@@ -154,13 +154,7 @@ pub trait Crypto {
         to_sign: &str,
         valid_gpg_signing_keys: &[[u8; 20]],
         strategy: &FindSigningFingerprintStrategy,
-    ) -> Result<String>;
-    fn sign_string_passphrase(
-        &self,
-        to_sign: &str,
-        valid_gpg_signing_keys: &[[u8; 20]],
-        strategy: &FindSigningFingerprintStrategy,
-        passphrase: &str,
+        passphrase: Option<String>,
         config: Option<git2::Config>,
     ) -> Result<String>;
 
@@ -206,9 +200,7 @@ pub trait Crypto {
 
 /// Used when the user configures gpgme to be used as a pgp backend.
 #[non_exhaustive]
-pub struct GpgMe {
-    // passphrase_provider: Option<Box<PassphraseProvider>>,
-}
+pub struct GpgMe {}
 impl Clone for PassphraseProvider {
     fn clone(&self) -> Self {
         PassphraseProvider {
@@ -237,9 +229,16 @@ impl gpgme::PassphraseProvider for PassphraseProvider {
     }
 }
 
+impl Debug for GpgMe {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GpgMe")
+    }
+}
 impl Crypto for GpgMe {
-    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<String>) -> Result<String> {
-        let passphrase_provider = PassphraseProvider { passphrase };
+    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<&str>) -> Result<String> {
+        let passphrase_provider = PassphraseProvider {
+            passphrase: passphrase.map(|s| s.to_string()),
+        };
         let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
         let mut output = Vec::new();
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
@@ -262,7 +261,7 @@ impl Crypto for GpgMe {
             passphrase: Some(passphrase.to_owned()),
         });
         let mut output = Vec::new();
-        if let Ok(signed) = ctx.sign(gpgme::SignMode::Normal, "", &mut output) {
+        if let Ok(_signed) = ctx.sign(gpgme::SignMode::Normal, "", &mut output) {
             return Ok(true);
         } else {
             return Ok(false);
@@ -291,66 +290,19 @@ impl Crypto for GpgMe {
 
         Ok(output)
     }
-    fn sign_string_passphrase(
-        &self,
-        to_sign: &str,
-        valid_gpg_signing_keys: &[[u8; 20]],
-        strategy: &FindSigningFingerprintStrategy,
-        passphrase: &str,
-        config: Option<git2::Config>,
-    ) -> Result<String> {
-        let passphrase_provider = PassphraseProvider {
-            passphrase: Some(passphrase.to_owned()),
-        };
-        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
-        let config = config.unwrap_or_else(|| git2::Config::open_default().unwrap());
-        let signing_key = match strategy {
-            FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
-            FindSigningFingerprintStrategy::GPG => {
-                let mut key_opt: Option<gpgme::Key> = None;
-
-                for key_id in valid_gpg_signing_keys {
-                    let key_res = ctx.get_key(hex::encode_upper(key_id));
-
-                    if let Ok(r) = key_res {
-                        key_opt = Some(r);
-                    }
-                }
-
-                if let Some(key) = key_opt {
-                    key.fingerprint()?.to_owned()
-                } else {
-                    return Err(Error::Generic("no valid signing key"));
-                }
-            }
-        };
-
-        ctx.set_armor(true);
-        let key = ctx.get_secret_key(signing_key)?;
-
-        ctx.add_signer(&key)?;
-        let mut output = Vec::new();
-        let signature = ctx.sign_detached(to_sign, &mut output);
-
-        if let Err(e) = signature {
-            return Err(Error::Gpg(e));
-        }
-
-        Ok(String::from_utf8(output)?)
-    }
-
     fn sign_string(
         &self,
         to_sign: &str,
         valid_gpg_signing_keys: &[[u8; 20]],
         strategy: &FindSigningFingerprintStrategy,
+        passphrase: Option<String>,
+        config: Option<git2::Config>,
     ) -> Result<String> {
+        let passphrase_provider = PassphraseProvider { passphrase };
         let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-
-        let config = git2::Config::open_default()?;
-
+        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
+        let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
+        let config = config.unwrap_or_else(|| git2::Config::open_default().unwrap());
         let signing_key = match strategy {
             FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
             FindSigningFingerprintStrategy::GPG => {

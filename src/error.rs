@@ -33,8 +33,18 @@ pub enum Error {
     FmtError(std::fmt::Error),
     TotpUrlError(totp_rs::TotpUrlError),
     SystemTimeError(std::time::SystemTimeError),
+    SerdeJsonError(serde_json::Error),
 }
-
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Self::SerdeJsonError(err)
+    }
+}
+impl From<String> for Error {
+    fn from(err: String) -> Self {
+        Self::GenericDyn(err)
+    }
+}
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Self::Io(err)
@@ -211,6 +221,7 @@ impl std::fmt::Display for Error {
             Self::FmtError(err) => write!(f, "{err}"),
             Self::TotpUrlError(_err) => write!(f, "TOTP url error"),
             Self::SystemTimeError(err) => write!(f, "{err}"),
+            Self::SerdeJsonError(err) => write!(f, "{err}"),
         }
     }
 }

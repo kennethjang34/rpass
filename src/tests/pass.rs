@@ -1690,7 +1690,7 @@ fn test_add_and_commit_internal() -> Result<()> {
         .write_all("swordfish".as_bytes())
         .unwrap();
 
-    let c_oid = add_and_commit_internal(
+    let c_oid = add_internal(
         &repo,
         &vec![PathBuf::from("new_password")],
         "unit test",
@@ -1729,10 +1729,11 @@ fn test_remove_and_commit() -> Result<()> {
     config.set_str("user.name", "default")?;
     config.set_str("user.email", "default@example.com")?;
 
-    let c_oid = remove_and_commit(
+    let c_oid = remove(
         &store,
         &vec![PathBuf::from("pass_to_be_deleted")],
         "unit test",
+        true,
     )
     .unwrap();
 

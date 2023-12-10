@@ -384,6 +384,8 @@ impl Recipient {
                 &file_content,
                 valid_gpg_signing_keys,
                 &FindSigningFingerprintStrategy::GPG,
+                None,
+                None,
             )?;
 
             let recipient_sig_filename: PathBuf = {
