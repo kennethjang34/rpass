@@ -360,6 +360,9 @@ impl PasswordStore {
         let domain = domain.unwrap_or_default();
         if password.contains("otpauth://") {
             error!("It seems like you are trying to save a TOTP code to the password store. This will reduce your 2FA solution to just 1FA, do you want to proceed?");
+            return Err(pass::Error::Generic(
+                "It seems like you are trying to save a TOTP code to the password store. This will reduce your 2FA solution to just 1FA, do you want to proceed?",
+            ));
         }
         let mut json = serde_json::Map::<String, serde_json::Value>::new();
         json.insert("username".to_string(), serde_json::Value::from(username));
@@ -380,8 +383,7 @@ impl PasswordStore {
         json_string: &str,
         passphrase: Option<&str>,
     ) -> pass::Result<PasswordEntry> {
-        let entry =
-            self.new_password_file_with_passphrase(id.as_ref(), json_string.as_ref(), passphrase);
+        let entry = self.new_password_file(id.as_ref(), json_string.as_ref(), passphrase);
         entry
     }
 
@@ -513,6 +515,10 @@ impl PasswordStore {
         config: &config::Config,
         home: &Option<PathBuf>,
     ) -> pass::Result<Vec<PasswordStore>> {
+        debug!(
+            "get_stores with config: {:#?} and home: {:#?}",
+            config, home
+        );
         let mut final_stores: Vec<PasswordStore> = vec![];
         let stores_res = config.get("stores");
         if let Ok(stores) = stores_res {
@@ -680,51 +686,7 @@ impl PasswordStore {
         }
     }
 
-    /// Creates a new password file in the store.
-    /// # Errors
-    /// Returns an `Err` if the path points to an file outside of the password store or the file already exists.
-    pub fn new_password_file(&mut self, path_end: &str, content: &str) -> Result<PasswordEntry> {
-        let mut path = self.root.clone();
-
-        let c_path = std::fs::canonicalize(path.as_path())?;
-
-        let path_iter = &mut path_end.split('/').peekable();
-
-        while let Some(p) = path_iter.next() {
-            if path_iter.peek().is_some() {
-                path.push(p);
-                let c_file_res = std::fs::canonicalize(path.as_path());
-                if let Ok(c_file) = c_file_res {
-                    if !c_file.starts_with(c_path.as_path()) {
-                        return Err(Error::Generic(
-                            "trying to write outside of password store directory",
-                        ));
-                    }
-                }
-                if !path.exists() {
-                    std::fs::create_dir(&path)?;
-                }
-            } else {
-                path.push(format!("{p}.gpg"));
-            }
-        }
-
-        if path.exists() {
-            return Err(Error::Generic("file already exist"));
-        }
-
-        match self.new_password_file_internal(&path, path_end, content) {
-            Ok(pe) => Ok(pe),
-            Err(err) => {
-                // try to remove the file we created, as cleanup
-                let _ = std::fs::remove_file(path);
-
-                // but always return the original error
-                Err(err)
-            }
-        }
-    }
-    pub fn new_password_file_with_passphrase(
+    pub fn new_password_file(
         &mut self,
         path_end: &str,
         content: &str,
@@ -759,8 +721,7 @@ impl PasswordStore {
             return Err(Error::Generic("file already exist"));
         }
 
-        match self.new_password_file_internal_with_passphrase(&path, path_end, content, passphrase)
-        {
+        match self.new_password_file_internal(&path, path_end, content, passphrase) {
             Ok(pe) => Ok(pe),
             Err(err) => {
                 // try to remove the file we created, as cleanup
@@ -773,53 +734,6 @@ impl PasswordStore {
     }
 
     fn new_password_file_internal(
-        &mut self,
-        path: &Path,
-        path_end: &str,
-        content: &str,
-    ) -> Result<PasswordEntry> {
-        let mut file = File::create(path)?;
-
-        if !self.valid_gpg_signing_keys.is_empty() {
-            self.verify_gpg_id_files()?;
-        }
-
-        let recipients = self.recipients_for_path(path)?;
-        let output = self.crypto.encrypt_string(content, &recipients)?;
-
-        if let Err(why) = file.write_all(&output) {
-            return Err(Error::from(why));
-        }
-        match self.repo() {
-            Err(_) => {
-                self.passwords.push(PasswordEntry::load_from_filesystem(
-                    &self.root,
-                    &append_extension(PathBuf::from(path_end), ".gpg"),
-                ));
-                Ok(PasswordEntry::load_from_filesystem(
-                    &self.root,
-                    &append_extension(PathBuf::from(path_end), ".gpg"),
-                ))
-            }
-            Ok(repo) => {
-                let message = format!("Add password for {path_end} using rpass");
-
-                repo.add_file(
-                    &[append_extension(PathBuf::from(path_end), ".gpg")],
-                    &message,
-                    self.crypto.as_ref(),
-                    None,
-                    true,
-                )?;
-
-                self.passwords
-                    .push(PasswordEntry::load_from_git(&self.root, path, &repo, self));
-
-                Ok(PasswordEntry::load_from_git(&self.root, path, &repo, self))
-            }
-        }
-    }
-    fn new_password_file_internal_with_passphrase(
         &mut self,
         path: &Path,
         path_end: &str,
