@@ -100,7 +100,6 @@ impl PasswordStore {
         password_store_signing_key: &Option<String>,
         home: &Option<PathBuf>,
         crypto_impl: &CryptoImpl,
-        _own_fingerprint: &Option<[u8; 20]>,
     ) -> Result<Self> {
         let pass_home = password_dir_raw(password_store_dir, home);
         if !pass_home.exists() {
@@ -557,25 +556,12 @@ impl PasswordStore {
                         None => Ok(CryptoImpl::GpgMe),
                     }?;
 
-                    let own_fingerprint = store.get("own_fingerprint");
-                    let own_fingerprint = match own_fingerprint {
-                        None => None,
-                        Some(k) => match k.clone().into_str() {
-                            Err(_) => None,
-                            Ok(key) => match <[u8; 20]>::from_hex(key) {
-                                Err(_) => None,
-                                Ok(fp) => Some(fp),
-                            },
-                        },
-                    };
-
                     final_stores.push(PasswordStore::new(
                         store_name,
                         &password_store_dir,
                         &valid_signing_keys,
                         home,
                         &pgp_impl,
-                        &own_fingerprint,
                     )?);
                 }
             }
@@ -588,7 +574,6 @@ impl PasswordStore {
                         &None,
                         home,
                         &CryptoImpl::GpgMe,
-                        &None,
                     )?);
                 }
             }
@@ -1862,9 +1847,6 @@ pub fn save_config(
             "pgp_implementation",
             store.crypto.implementation().to_string(),
         );
-        if let Some(fp) = store.crypto.own_fingerprint() {
-            store_map.insert("own_fingerprint", hex::encode_upper(fp));
-        }
         stores_map.insert(store.get_name().clone(), store_map);
     }
 
