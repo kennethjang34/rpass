@@ -495,7 +495,6 @@ impl PasswordStore {
         &self,
         file_name: &str,
         content: &str,
-        // store: PasswordStoreType,
         passphrase: Option<&str>,
     ) -> pass::Result<()> {
         let password_entry_opt = self.get_entry(file_name);
