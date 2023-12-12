@@ -143,7 +143,7 @@ pub trait Crypto: Debug {
     /// isn't capable of encrypting.
     fn encrypt_string(&self, plaintext: &str, recipients: &[Recipient]) -> Result<Vec<u8>>;
 
-    fn verify_passphrase(&self, username: Option<String>, passphrase: &str) -> Result<bool>;
+    fn verify_passphrase(&self, user_id: Option<String>, passphrase: &str) -> Result<bool>;
 
     /// Returns a gpg signature for the supplied string. Suitable to add to a gpg commit.
     /// # Errors
@@ -246,14 +246,14 @@ impl Crypto for GpgMe {
         ctx_with_passphrase_provider.decrypt(ciphertext, &mut output)?;
         return Ok(String::from_utf8(output)?);
     }
-    fn verify_passphrase(&self, username: Option<String>, passphrase: &str) -> Result<bool> {
+    fn verify_passphrase(&self, user_id: Option<String>, passphrase: &str) -> Result<bool> {
         let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        if let Some(username) = username {
-            if let Ok(key) = ctx.locate_key(username.clone()) {
+        if let Some(user_id) = user_id {
+            if let Ok(key) = ctx.locate_key(user_id.clone()) {
                 ctx.add_signer(&key).unwrap();
             } else {
-                error!("no key for user: {}", username);
+                error!("no key for user: {}", user_id);
             }
         } else {
         }
