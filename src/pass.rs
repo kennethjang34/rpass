@@ -16,7 +16,6 @@
 
 use super::pass;
 use git2::Repository;
-use hex::FromHex;
 use log::*;
 use serde::{de::Error as serde_err, ser::SerializeStruct, Deserialize, Serialize};
 use serde_json::json;
@@ -465,7 +464,7 @@ impl PasswordStore {
     pub fn delete_entry(
         &mut self,
         id: &str,
-        passphrase: Option<String>,
+        passphrase: Option<&str>,
     ) -> pass::Result<PasswordEntry> {
         let password_entry_opt = self.remove_entry(id);
         let password_entry = password_entry_opt?;
@@ -1498,7 +1497,7 @@ impl PasswordEntry {
         Ok(())
     }
 
-    pub fn delete_file(&self, store: &PasswordStore, passphrase: Option<String>) -> Result<()> {
+    pub fn delete_file(&self, store: &PasswordStore, passphrase: Option<&str>) -> Result<()> {
         std::fs::remove_file(&self.file_path)?;
 
         if store.repo().is_err() {
