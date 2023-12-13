@@ -243,9 +243,7 @@ impl RepoExt for git2::Repository {
             let tree = self.find_tree(oid)?;
 
             let oid = RepoExt::commit(
-                self, &signature, message, &tree, &parents, crypto,
-                // store.get_crypto(),
-                passphrase,
+                self, &signature, message, &tree, &parents, crypto, passphrase,
             )?;
             Ok(oid)
         } else {
