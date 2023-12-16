@@ -1,9 +1,12 @@
-use log::error;
+use log::*;
+use pinentry::PassphraseInput;
+use secrecy::ExposeSecret;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Formatter, Write},
-    panic::RefUnwindSafe,
+    io,
     path::Path,
+    sync::{Arc, Mutex, RwLock},
 };
 
 pub use crate::error::{Error, Result};
@@ -132,18 +135,23 @@ impl Key for GpgMeKey {
 
 /// All operations that can be done through pgp, either with gpgme.
 pub trait Crypto: Debug {
+    // fn get_passphrase_provider(&self) -> Option<Arc<Mutex<PassphraseProvider>>>;
     /// Reads a file and decrypts it
     /// # Errors
     /// Will return `Err` if decryption fails, for example if the current user isn't the
     /// recipient of the message.
-    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<&str>) -> Result<String>;
+    fn decrypt_string(
+        &self,
+        ciphertext: &[u8],
+        passphrase_provider: Option<PassphraseProvider>,
+    ) -> Result<String>;
     /// Encrypts a string
     /// # Errors
     /// Will return `Err` if encryption fails, for example if the current users key
     /// isn't capable of encrypting.
     fn encrypt_string(&self, plaintext: &str, recipients: &[Recipient]) -> Result<Vec<u8>>;
 
-    fn verify_passphrase(&self, user_id: Option<String>, passphrase: &str) -> Result<bool>;
+    // fn verify_passphrase(&self, user_id: Option<String>, passphrase: &str) -> Result<bool>;
 
     /// Returns a gpg signature for the supplied string. Suitable to add to a gpg commit.
     /// # Errors
@@ -154,7 +162,7 @@ pub trait Crypto: Debug {
         to_sign: &str,
         valid_gpg_signing_keys: &[[u8; 20]],
         strategy: &FindSigningFingerprintStrategy,
-        passphrase: Option<String>,
+        passphrase_provider: Option<PassphraseProvider>,
         config: Option<git2::Config>,
     ) -> Result<String>;
 
@@ -204,27 +212,145 @@ pub struct GpgMe {}
 impl Clone for PassphraseProvider {
     fn clone(&self) -> Self {
         PassphraseProvider {
-            passphrase: self.passphrase.clone(),
+            passphrases: self.passphrases.clone(),
+            last_tried_key_id: self.last_tried_key_id.clone(),
         }
     }
 }
-pub struct PassphraseProvider {
-    passphrase: Option<String>,
+impl Default for PassphraseProvider {
+    fn default() -> Self {
+        PassphraseProvider {
+            passphrases: Arc::new(RwLock::new(HashMap::new())),
+            last_tried_key_id: Arc::new(Mutex::new(None)),
+        }
+    }
 }
-unsafe impl Sync for PassphraseProvider {}
-unsafe impl Send for PassphraseProvider {}
-impl RefUnwindSafe for PassphraseProvider {}
+
+pub struct PassphraseProvider {
+    pub passphrases: Arc<RwLock<HashMap<String, String>>>,
+    pub last_tried_key_id: Arc<Mutex<Option<String>>>,
+}
+impl PassphraseProvider {
+    pub fn new(passphrases: Arc<RwLock<HashMap<String, String>>>) -> Self {
+        PassphraseProvider {
+            passphrases,
+            last_tried_key_id: Arc::new(Mutex::new(None)),
+        }
+    }
+    pub fn create_context(&mut self) -> gpgme::Result<gpgme::ContextWithCallbacks> {
+        let ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+        let mut ctx = ctx.set_passphrase_provider(self.clone());
+        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
+        let passphrases = self.passphrases.clone();
+        ctx.set_status_handler({
+            let last_tried_key_id = self.last_tried_key_id.clone();
+            move |_ctx: Option<&std::ffi::CStr>, status: Option<&std::ffi::CStr>| {
+                if status.is_some_and(move |s| s.to_str().unwrap_or_default() == "ERROR") {
+                    let last_tried_key_id = last_tried_key_id.lock().unwrap().to_owned();
+                    if let Some(ref last_tried_key_id) = last_tried_key_id {
+                        passphrases.write().unwrap().remove(last_tried_key_id);
+                    }
+                    Err(gpgme::error::Error::PIN_ENTRY)
+                } else {
+                    Ok(())
+                }
+            }
+        });
+        Ok(ctx)
+    }
+}
+impl PassphraseProvider {
+    fn prompt_pinentry(
+        &mut self,
+        key_id: Option<&str>,
+    ) -> std::result::Result<String, pinentry::Error> {
+        let passphrase = if let Some(mut input) = PassphraseInput::with_binary("pinentry-mac") {
+            input
+                .with_description(&format!(
+                    "Enter passphrase for {}",
+                    key_id.unwrap_or("key id not passed")
+                ))
+                .with_prompt("Passphrase:")
+                .interact()
+        } else {
+            if let Some(mut input) = PassphraseInput::with_default_binary() {
+                // pinentry binary is available!
+                input
+                    .with_description(&format!(
+                        "Enter passphrase for {}",
+                        key_id.unwrap_or("key id not passed")
+                    ))
+                    .with_prompt("Passphrase:")
+                    .interact()
+            } else {
+                Err(pinentry::Error::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no default pinentry",
+                )))
+            }
+        };
+        passphrase.map(|s| s.expose_secret().to_owned())
+    }
+}
 impl gpgme::PassphraseProvider for PassphraseProvider {
     fn get_passphrase(
         &mut self,
-        _request: PassphraseRequest,
+        request: PassphraseRequest,
         out: &mut dyn std::io::Write,
     ) -> gpgme::error::Result<()> {
-        if let Some(passphrase) = &self.passphrase {
-            out.write_all(passphrase.as_bytes())?;
-        } else {
-            out.write_all(b"abcd")?;
+        let user_id = request.user_id_hint().map(|s| s.to_string()).ok();
+        if let Some(ref user_id) = user_id {
+            let mut locked = self.last_tried_key_id.lock().unwrap();
+            locked.replace(user_id.to_owned());
         }
+        let passphrase = {
+            if request.prev_attempt_failed && user_id.is_some() {
+                self.passphrases
+                    .write()
+                    .unwrap()
+                    .remove(user_id.as_ref().unwrap());
+            }
+            let passphrases = self.passphrases.clone();
+            let read_lock = passphrases.read();
+            if let Some(user_id) = user_id {
+                let res = if let Ok(locked) = read_lock {
+                    let passphrase = if let Some(passphrase) = locked.get(&user_id) {
+                        Ok(passphrase.to_owned())
+                    } else {
+                        let res = self.prompt_pinentry(Some(&user_id));
+                        res.map_err(|e| {
+                            error!("failed to prompt pinentry: {:?}", e);
+                            gpgme::error::Error::PIN_ENTRY
+                        })
+                    };
+                    drop(locked);
+                    passphrase
+                } else {
+                    error!("failed to lock lock passphrase cache. {:?}", read_lock);
+                    drop(read_lock);
+                    let res = self.prompt_pinentry(Some(&user_id));
+                    res.map_err(|e| {
+                        error!("failed to prompt pinentry: {:?}", e);
+                        gpgme::error::Error::PIN_ENTRY
+                    })
+                };
+                if res.is_ok() {
+                    self.passphrases
+                        .write()
+                        .unwrap()
+                        .insert(user_id, res.as_ref().unwrap().to_owned());
+                }
+                res
+            } else {
+                let res = self.prompt_pinentry(None);
+                res.map_err(|e| {
+                    error!("failed to prompt pinentry: {:?}", e);
+                    gpgme::error::Error::PIN_ENTRY
+                })
+            }
+        };
+        let passphrase = passphrase.unwrap();
+        out.write_all(passphrase.as_bytes())?;
         Ok(())
     }
 }
@@ -235,37 +361,18 @@ impl Debug for GpgMe {
     }
 }
 impl Crypto for GpgMe {
-    fn decrypt_string(&self, ciphertext: &[u8], passphrase: Option<&str>) -> Result<String> {
-        let passphrase_provider = PassphraseProvider {
-            passphrase: passphrase.map(|s| s.to_string()),
-        };
+    fn decrypt_string(
+        &self,
+        ciphertext: &[u8],
+        passphrase_provider: Option<PassphraseProvider>,
+    ) -> Result<String> {
+        let passphrase_provider = passphrase_provider.unwrap_or_default();
         let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
         let mut output = Vec::new();
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
         let mut ctx_with_passphrase_provider = ctx.set_passphrase_provider(passphrase_provider);
         ctx_with_passphrase_provider.decrypt(ciphertext, &mut output)?;
         return Ok(String::from_utf8(output)?);
-    }
-    fn verify_passphrase(&self, user_id: Option<String>, passphrase: &str) -> Result<bool> {
-        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        if let Some(user_id) = user_id {
-            if let Ok(key) = ctx.locate_key(user_id.clone()) {
-                ctx.add_signer(&key).unwrap();
-            } else {
-                error!("no key for user: {}", user_id);
-            }
-        } else {
-        }
-        let mut ctx = ctx.set_passphrase_provider(PassphraseProvider {
-            passphrase: Some(passphrase.to_owned()),
-        });
-        let mut output = Vec::new();
-        if let Ok(_signed) = ctx.sign(gpgme::SignMode::Normal, "", &mut output) {
-            return Ok(true);
-        } else {
-            return Ok(false);
-        }
     }
 
     fn encrypt_string(&self, plaintext: &str, recipients: &[Recipient]) -> Result<Vec<u8>> {
@@ -295,13 +402,13 @@ impl Crypto for GpgMe {
         to_sign: &str,
         valid_gpg_signing_keys: &[[u8; 20]],
         strategy: &FindSigningFingerprintStrategy,
-        passphrase: Option<String>,
+        // passphrase_provider: Box<dyn gpgme::PassphraseProvider + Send + Sync>,
+        passphrase_provider: Option<PassphraseProvider>,
         config: Option<git2::Config>,
     ) -> Result<String> {
-        let passphrase_provider = PassphraseProvider { passphrase };
         let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        let mut ctx = ctx.set_passphrase_provider(passphrase_provider);
+        let mut ctx = ctx.set_passphrase_provider(passphrase_provider.unwrap_or_default());
         let config = config.unwrap_or_else(|| git2::Config::open_default().unwrap());
         let signing_key = match strategy {
             FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,

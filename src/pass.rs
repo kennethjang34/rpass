@@ -35,7 +35,7 @@ use chrono::prelude::*;
 use totp_rs::TOTP;
 
 use crate::{
-    crypto::{Crypto, CryptoImpl, GpgMe, VerificationError},
+    crypto::{Crypto, CryptoImpl, GpgMe, PassphraseProvider, VerificationError},
     git::*,
 };
 pub use crate::{
@@ -58,7 +58,7 @@ pub struct PasswordStore {
     /// a list of password files with meta data
     pub passwords: Vec<PasswordEntry>,
     /// The gpg implementation
-    crypto: Box<dyn Crypto + Send>,
+    crypto: Box<dyn Crypto + Send + Sync>,
     /// The home dir of the user, if it exists
     user_home: Option<PathBuf>,
 }
@@ -105,7 +105,7 @@ impl PasswordStore {
             return Err(Error::Generic("failed to locate password directory"));
         }
 
-        let crypto: Box<dyn Crypto + Send> = match crypto_impl {
+        let crypto: Box<dyn Crypto + Send + Sync> = match crypto_impl {
             CryptoImpl::GpgMe => Box::new(GpgMe {}),
         };
 
@@ -265,7 +265,7 @@ impl PasswordStore {
         password: Option<&str>,
         note: Option<&str>,
         custom_fields: Option<&serde_json::Map<String, serde_json::Value>>,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<serde_json::Value> {
         let id = id.to_string();
         let mut json = serde_json::Map::<String, serde_json::Value>::new();
@@ -302,16 +302,16 @@ impl PasswordStore {
             return Err(pass::Error::Generic("Nothing to update"));
         } else {
         }
-        return self.insert_into_entry(&id, json.into(), passphrase);
+        return self.insert_into_entry(&id, json.into(), passphrase_provider);
     }
     pub fn insert_into_entry(
         &self,
         id: &str,
         content: serde_json::Value,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<serde_json::Value> {
         let entry = self.get_entry(&id)?;
-        let secret = entry.secret(self, passphrase.clone())?;
+        let secret = entry.secret(self, passphrase_provider.clone())?;
         let mut updated_values = serde_json::Map::<String, serde_json::Value>::new();
         if let Ok(mut previous) = serde_json::from_str::<serde_json::Value>(&secret) {
             let entry_data = previous
@@ -332,7 +332,7 @@ impl PasswordStore {
                 pass::Error::GenericDyn(format!("Failed to serialize entry content: {}", serde_err))
             })?;
             if self
-                .overwrite_entry_file(&id, serialized, passphrase.clone())
+                .overwrite_entry_file(&id, serialized, passphrase_provider.clone())
                 .is_ok()
             {
                 Ok(updated_values.into())
@@ -350,7 +350,7 @@ impl PasswordStore {
         domain: Option<&str>,
         note: Option<&str>,
         custom_fields: Option<HashMap<String, serde_json::Value>>,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<PasswordEntry> {
         let id = uuid::Uuid::new_v4().to_string();
         let password = password.unwrap_or_default();
@@ -373,15 +373,15 @@ impl PasswordStore {
         let content = serde_json::to_string(&json).map_err(|serde_err| {
             pass::Error::GenericDyn(format!("Failed to serialize entry content: {}", serde_err))
         })?;
-        self.create_entry_file(id.as_ref(), content.as_ref(), passphrase)
+        self.create_entry_file(id.as_ref(), content.as_ref(), passphrase_provider)
     }
     fn create_entry_file(
         &mut self,
         id: &str,
         json_string: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<PasswordEntry> {
-        let entry = self.new_password_file(id.as_ref(), json_string.as_ref(), passphrase);
+        let entry = self.new_password_file(id.as_ref(), json_string.as_ref(), passphrase_provider);
         entry
     }
 
@@ -391,12 +391,12 @@ impl PasswordStore {
         id: &str,
         key: &str,
         value: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
         create_if_not_exists: bool,
     ) -> pass::Result<Option<String>> {
         let entry = self.get_entry(&id);
         if let Ok(entry) = entry {
-            let secret = entry.secret(self, passphrase.clone())?;
+            let secret = entry.secret(self, passphrase_provider.clone())?;
             if let Ok(mut content) = serde_json::from_str::<serde_json::Value>(&secret) {
                 let existing = content.get(key);
                 if let Some(existing) = existing {
@@ -414,7 +414,7 @@ impl PasswordStore {
                                 serde_err
                             ))
                         })?;
-                        self.overwrite_entry_file(&id, &content, passphrase.clone())?;
+                        self.overwrite_entry_file(&id, &content, passphrase_provider.clone())?;
                         Ok(Some(existing))
                     } else {
                         Err(pass::Error::GenericDyn(format!("existing entry content is in wrong format. Value is not of String type. Existing value: {:?}",existing.to_string()).to_string()))
@@ -433,7 +433,7 @@ impl PasswordStore {
                             serde_err
                         ))
                     })?;
-                    self.overwrite_entry_file(&id, &content, passphrase.clone())?;
+                    self.overwrite_entry_file(&id, &content, passphrase_provider.clone())?;
                     return Ok(None);
                 }
             } else {
@@ -453,7 +453,7 @@ impl PasswordStore {
                         serde_err
                     ))
                 })?;
-                self.create_entry_file(id, &content, passphrase)?;
+                self.create_entry_file(id, &content, passphrase_provider)?;
                 Ok(None)
             } else {
                 Err(pass::Error::Generic("Failed to parse entry content"))
@@ -464,12 +464,12 @@ impl PasswordStore {
     pub fn delete_entry(
         &mut self,
         id: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<PasswordEntry> {
         let password_entry_opt = self.remove_entry(id);
         let password_entry = password_entry_opt?;
         password_entry
-            .delete_file(self, passphrase)
+            .delete_file(self, passphrase_provider)
             .map(|_| password_entry)
     }
     pub fn get_entry(&self, id: &str) -> pass::Result<PasswordEntry> {
@@ -494,7 +494,7 @@ impl PasswordStore {
         &self,
         file_name: &str,
         content: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> pass::Result<()> {
         let password_entry_opt = self.get_entry(file_name);
         let password_entry = password_entry_opt.map_err(|_e| {
@@ -502,7 +502,7 @@ impl PasswordStore {
                 "entry file to overwrite not found. Passed file id: {file_name}"
             ))
         })?;
-        let r = password_entry.update(content.to_string(), &self, passphrase);
+        let r = password_entry.update(content.to_string(), &self, passphrase_provider);
         if r.is_err() {
             error!("Failed to update password: {:?}", r.as_ref().unwrap_err());
         }
@@ -600,7 +600,7 @@ impl PasswordStore {
     }
 
     /// returns the crypto implementation for the store
-    pub fn get_crypto(&self) -> &(dyn Crypto + Send) {
+    pub fn get_crypto(&self) -> &(dyn Crypto + Send + Sync) {
         &*self.crypto
     }
 
@@ -673,7 +673,7 @@ impl PasswordStore {
         &mut self,
         path_end: &str,
         content: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> Result<PasswordEntry> {
         let mut path = self.root.clone();
 
@@ -704,7 +704,7 @@ impl PasswordStore {
             return Err(Error::Generic("file already exist"));
         }
 
-        match self.new_password_file_internal(&path, path_end, content, passphrase) {
+        match self.new_password_file_internal(&path, path_end, content, passphrase_provider) {
             Ok(pe) => Ok(pe),
             Err(err) => {
                 // try to remove the file we created, as cleanup
@@ -721,7 +721,7 @@ impl PasswordStore {
         path: &Path,
         path_end: &str,
         content: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> Result<PasswordEntry> {
         let mut file = File::create(path)?;
 
@@ -753,7 +753,7 @@ impl PasswordStore {
                     &[append_extension(PathBuf::from(path_end), ".gpg")],
                     &message,
                     self.crypto.as_ref(),
-                    passphrase,
+                    passphrase_provider,
                     true,
                 )?;
 
@@ -1076,8 +1076,65 @@ impl PasswordStore {
 
         Ok(())
     }
-    pub fn verify_passphrase(&self, username: Option<String>, passphrase: &str) -> Result<bool> {
-        self.crypto.verify_passphrase(username, passphrase)
+    pub fn verify_passphrase(
+        &self,
+        _user_id_opt: Option<String>,
+        passphrase_provider: Option<PassphraseProvider>,
+    ) -> Result<bool> {
+        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
+        if let Some(mut passphrase_provider) = passphrase_provider {
+            let mut ctx = passphrase_provider.create_context()?;
+            if let Ok(recipients) = self.all_recipients() {
+                for recipient in recipients.iter() {
+                    if recipient.not_usable {
+                        continue;
+                    }
+                    let k = ctx.locate_key(recipient.key_id.clone())?;
+
+                    let mut encrypted = Vec::new();
+                    let plaintext = "";
+                    let encryption_res = ctx.encrypt(vec![&k], plaintext, &mut encrypted);
+                    if encryption_res.is_err() {
+                        error!("failed to encrypt. {:?}", encryption_res);
+                    }
+                    let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
+                    if let Ok(_decryption_res) = decryption_res {
+                        return Ok(true);
+                    } else {
+                        error!("failed to decrypt. {:?}", decryption_res);
+                    }
+                }
+                return Ok(false);
+            } else {
+                return Err(Error::Generic("no recipients"));
+            }
+        } else {
+            if let Ok(recipients) = self.all_recipients() {
+                for recipient in recipients.iter() {
+                    if recipient.not_usable {
+                        continue;
+                    }
+                    let k = ctx.locate_key(recipient.key_id.clone())?;
+
+                    let mut encrypted = Vec::new();
+                    let plaintext = "";
+                    let encryption_res = ctx.encrypt(vec![&k], plaintext, &mut encrypted);
+                    if encryption_res.is_err() {
+                        error!("failed to encrypt. {:?}", encryption_res);
+                    }
+                    let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
+                    if let Ok(_decryption_res) = decryption_res {
+                        return Ok(true);
+                    } else {
+                        error!("failed to decrypt. {:?}", decryption_res);
+                    }
+                }
+                return Ok(false);
+            } else {
+                return Err(Error::Generic("no recipients"));
+            }
+        }
     }
 
     /// Add a file to the store, and commit it to the supplied git repository.
@@ -1087,7 +1144,7 @@ impl PasswordStore {
         &self,
         paths: &[PathBuf],
         message: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
         should_commit: bool,
     ) -> Result<git2::Oid> {
         let repo = self.repo();
@@ -1119,7 +1176,7 @@ impl PasswordStore {
                 &tree,
                 &parents,
                 self.crypto.as_ref(),
-                passphrase,
+                passphrase_provider,
             )?;
             let obj = repo.find_object(oid, None)?;
             repo.reset(&obj, git2::ResetType::Hard, None)?;
@@ -1137,7 +1194,7 @@ impl PasswordStore {
         &mut self,
         old_name: &str,
         new_name: &str,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> Result<usize> {
         if new_name.starts_with('/') || new_name.contains("..") {
             return Err(Error::Generic("directory traversal not allowed"));
@@ -1165,7 +1222,7 @@ impl PasswordStore {
         let mut file = std::fs::File::create(&new_path)?;
         let secret = self
             .crypto
-            .decrypt_string(&std::fs::read(&old_path)?, passphrase.clone())?;
+            .decrypt_string(&std::fs::read(&old_path)?, passphrase_provider.clone())?;
         let new_recipients = Recipient::all_recipients(
             &self.recipients_file_for_dir(&new_path)?,
             self.crypto.as_ref(),
@@ -1181,7 +1238,7 @@ impl PasswordStore {
                 &new_file_name,
                 self.get_crypto(),
                 "moved file",
-                passphrase,
+                passphrase_provider,
                 true,
             )?;
         }
@@ -1417,14 +1474,18 @@ impl PasswordEntry {
     /// Decrypts and returns the full content of the `PasswordEntry`
     /// # Errors
     /// Returns an `Err` if the path is empty
-    pub fn secret(&self, store: &PasswordStore, passphrase: Option<&str>) -> Result<String> {
+    pub fn secret(
+        &self,
+        store: &PasswordStore,
+        passphrase_provider: Option<PassphraseProvider>,
+    ) -> Result<String> {
         let s = fs::metadata(&self.file_path)?;
         if s.len() == 0 {
             return Err(Error::Generic("empty password file"));
         }
 
         let content = fs::read(&self.file_path)?;
-        store.crypto.decrypt_string(&content, passphrase)
+        store.crypto.decrypt_string(&content, passphrase_provider)
     }
 
     /// Decrypts and returns the first line of the `PasswordEntry`
@@ -1474,7 +1535,7 @@ impl PasswordEntry {
         &self,
         secret: String,
         store: &PasswordStore,
-        passphrase: Option<&str>,
+        passphrase_provider: Option<PassphraseProvider>,
     ) -> Result<()> {
         self.update_internal(&secret, store)?;
 
@@ -1490,14 +1551,18 @@ impl PasswordEntry {
                 ".gpg",
             )],
             &message,
-            passphrase,
+            passphrase_provider,
             true,
         )?;
 
         Ok(())
     }
 
-    pub fn delete_file(&self, store: &PasswordStore, passphrase: Option<&str>) -> Result<()> {
+    pub fn delete_file(
+        &self,
+        store: &PasswordStore,
+        passphrase_provider: Option<PassphraseProvider>,
+    ) -> Result<()> {
         std::fs::remove_file(&self.file_path)?;
 
         if store.repo().is_err() {
@@ -1513,7 +1578,8 @@ impl PasswordEntry {
             )],
             store.get_crypto(),
             &message,
-            passphrase.as_deref(),
+            passphrase_provider,
+            // passphrase.as_deref(),
             true,
         )?;
         Ok(())
