@@ -17,7 +17,7 @@ use hmac::Mac;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    crypto::{Crypto, FindSigningFingerprintStrategy, PassphraseProvider, VerificationError},
+    crypto::{Crypto, FindSigningFingerprintStrategy, Handler, VerificationError},
     error::{Error, Result},
     pass::{to_result, PasswordEntry, PasswordStore, RepositoryStatus},
     signature::SignatureStatus,
@@ -48,7 +48,7 @@ pub trait RepoExt {
         tree: &git2::Tree,
         parents: &[&git2::Commit],
         crypto: &(dyn Crypto + Send),
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<Oid>;
     fn find_last_commit(&self) -> Result<git2::Commit>;
     fn should_sign(&self) -> bool;
@@ -63,7 +63,7 @@ pub trait RepoExt {
         paths: &[PathBuf],
         message: &str,
         crypto: &(dyn Crypto + Send),
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<Oid>;
     fn read_git_meta_data(
@@ -94,7 +94,7 @@ pub trait RepoExt {
         crypto: &(dyn Crypto + Send),
         message: &str,
         // passphrase: Option<&str>,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<Oid>;
     fn move_file(
@@ -103,7 +103,7 @@ pub trait RepoExt {
         new_name: &Path,
         crypto: &(dyn Crypto + Send),
         message: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         // passphrase: Option<&str>,
         should_commit: bool,
     ) -> Result<git2::Oid>;
@@ -189,7 +189,7 @@ impl RepoExt for git2::Repository {
         new_name: &Path,
         crypto: &(dyn Crypto + Send),
         message: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<git2::Oid> {
         let mut index = self.index()?;
@@ -229,7 +229,7 @@ impl RepoExt for git2::Repository {
         paths: &[PathBuf],
         crypto: &(dyn Crypto + Send),
         message: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<git2::Oid> {
         let mut index = self.index()?;
@@ -289,7 +289,7 @@ impl RepoExt for git2::Repository {
         tree: &git2::Tree,
         parents: &[&git2::Commit],
         crypto: &(dyn Crypto + Send),
-        passphrase_provider: Option<PassphraseProvider>, // passphrase: Option<&str>,
+        passphrase_provider: Option<Handler>, // passphrase: Option<&str>,
     ) -> Result<git2::Oid> {
         if self.should_sign() {
             let commit_buf = self.commit_create_buffer(
@@ -366,7 +366,7 @@ impl RepoExt for git2::Repository {
         paths: &[PathBuf],
         message: &str,
         crypto: &(dyn Crypto + Send),
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<git2::Oid> {
         let mut index = self.index()?;

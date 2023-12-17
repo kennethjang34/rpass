@@ -35,7 +35,7 @@ use chrono::prelude::*;
 use totp_rs::TOTP;
 
 use crate::{
-    crypto::{Crypto, CryptoImpl, GpgMe, PassphraseProvider, VerificationError},
+    crypto::{Crypto, CryptoImpl, GpgMe, Handler, VerificationError},
     git::*,
 };
 pub use crate::{
@@ -265,7 +265,7 @@ impl PasswordStore {
         password: Option<&str>,
         note: Option<&str>,
         custom_fields: Option<&serde_json::Map<String, serde_json::Value>>,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<serde_json::Value> {
         let id = id.to_string();
         let mut json = serde_json::Map::<String, serde_json::Value>::new();
@@ -308,7 +308,7 @@ impl PasswordStore {
         &self,
         id: &str,
         content: serde_json::Value,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<serde_json::Value> {
         let entry = self.get_entry(&id)?;
         let secret = entry.secret(self, passphrase_provider.clone())?;
@@ -350,7 +350,7 @@ impl PasswordStore {
         domain: Option<&str>,
         note: Option<&str>,
         custom_fields: Option<HashMap<String, serde_json::Value>>,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<PasswordEntry> {
         let id = uuid::Uuid::new_v4().to_string();
         let password = password.unwrap_or_default();
@@ -379,7 +379,7 @@ impl PasswordStore {
         &mut self,
         id: &str,
         json_string: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<PasswordEntry> {
         let entry = self.new_password_file(id.as_ref(), json_string.as_ref(), passphrase_provider);
         entry
@@ -391,7 +391,7 @@ impl PasswordStore {
         id: &str,
         key: &str,
         value: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         create_if_not_exists: bool,
     ) -> pass::Result<Option<String>> {
         let entry = self.get_entry(&id);
@@ -464,7 +464,7 @@ impl PasswordStore {
     pub fn delete_entry(
         &mut self,
         id: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<PasswordEntry> {
         let password_entry_opt = self.remove_entry(id);
         let password_entry = password_entry_opt?;
@@ -494,7 +494,7 @@ impl PasswordStore {
         &self,
         file_name: &str,
         content: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> pass::Result<()> {
         let password_entry_opt = self.get_entry(file_name);
         let password_entry = password_entry_opt.map_err(|_e| {
@@ -673,7 +673,7 @@ impl PasswordStore {
         &mut self,
         path_end: &str,
         content: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<PasswordEntry> {
         let mut path = self.root.clone();
 
@@ -721,7 +721,7 @@ impl PasswordStore {
         path: &Path,
         path_end: &str,
         content: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<PasswordEntry> {
         let mut file = File::create(path)?;
 
@@ -1079,30 +1079,42 @@ impl PasswordStore {
     pub fn verify_passphrase(
         &self,
         _user_id_opt: Option<String>,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<bool> {
-        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
         if let Some(mut passphrase_provider) = passphrase_provider {
-            let mut ctx = passphrase_provider.create_context()?;
+            let mut passphrase_provider2 = passphrase_provider.clone();
+            let mut ctx = passphrase_provider2.create_context()?;
             if let Ok(recipients) = self.all_recipients() {
                 for recipient in recipients.iter() {
                     if recipient.not_usable {
                         continue;
                     }
-                    let k = ctx.locate_key(recipient.key_id.clone())?;
-
+                    let k = ctx.locate_key(recipient.key_id.clone()).unwrap();
                     let mut encrypted = Vec::new();
                     let plaintext = "";
                     let encryption_res = ctx.encrypt(vec![&k], plaintext, &mut encrypted);
                     if encryption_res.is_err() {
                         error!("failed to encrypt. {:?}", encryption_res);
                     }
-                    let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
-                    if let Ok(_decryption_res) = decryption_res {
-                        return Ok(true);
-                    } else {
-                        error!("failed to decrypt. {:?}", decryption_res);
+                    loop {
+                        let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
+                        debug!("decryption_res: {:?}", decryption_res);
+                        debug!("passphrase_provider: {:?}", passphrase_provider);
+                        ctx.clear_passphrase_provider();
+                        ctx.set_passphrase_provider(passphrase_provider.clone());
+                        match decryption_res {
+                            Ok(_decryption_res) => {
+                                return Ok(true);
+                            }
+                            Err(e) => {
+                                error!("failed to decrypt. {:?}", e);
+                                match e {
+                                    gpgme::Error::DECRYPT_FAILED => {}
+                                    gpgme::Error::BAD_PASSPHRASE => {}
+                                    _ => return Ok(false),
+                                }
+                            }
+                        }
                     }
                 }
                 return Ok(false);
@@ -1110,6 +1122,8 @@ impl PasswordStore {
                 return Err(Error::Generic("no recipients"));
             }
         } else {
+            let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+            ctx.set_pinentry_mode(gpgme::PinentryMode::Ask)?;
             if let Ok(recipients) = self.all_recipients() {
                 for recipient in recipients.iter() {
                     if recipient.not_usable {
@@ -1144,7 +1158,7 @@ impl PasswordStore {
         &self,
         paths: &[PathBuf],
         message: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
         should_commit: bool,
     ) -> Result<git2::Oid> {
         let repo = self.repo();
@@ -1194,7 +1208,7 @@ impl PasswordStore {
         &mut self,
         old_name: &str,
         new_name: &str,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<usize> {
         if new_name.starts_with('/') || new_name.contains("..") {
             return Err(Error::Generic("directory traversal not allowed"));
@@ -1477,7 +1491,7 @@ impl PasswordEntry {
     pub fn secret(
         &self,
         store: &PasswordStore,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<String> {
         let s = fs::metadata(&self.file_path)?;
         if s.len() == 0 {
@@ -1535,7 +1549,7 @@ impl PasswordEntry {
         &self,
         secret: String,
         store: &PasswordStore,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<()> {
         self.update_internal(&secret, store)?;
 
@@ -1561,7 +1575,7 @@ impl PasswordEntry {
     pub fn delete_file(
         &self,
         store: &PasswordStore,
-        passphrase_provider: Option<PassphraseProvider>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<()> {
         std::fs::remove_file(&self.file_path)?;
 

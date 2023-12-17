@@ -36,6 +36,7 @@ serde_json = "1.0.96"
 array_tool = "1.0.3"
 pinentry = "0.5.0"
 secrecy = "0.8.0"
+gpgme-sys = "0.11.0"
 
 
 
