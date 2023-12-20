@@ -512,10 +512,6 @@ impl PasswordStore {
         config: &config::Config,
         home: &Option<PathBuf>,
     ) -> pass::Result<Vec<PasswordStore>> {
-        debug!(
-            "get_stores with config: {:#?} and home: {:#?}",
-            config, home
-        );
         let mut final_stores: Vec<PasswordStore> = vec![];
         let stores_res = config.get("stores");
         if let Ok(stores) = stores_res {
@@ -1073,82 +1069,12 @@ impl PasswordStore {
         let message = format!("Reencrypt password store with new GPG ids {keys}");
 
         self.add(&names, &message, None, true)?;
-
         Ok(())
     }
-    pub fn verify_passphrase(
-        &self,
-        _user_id_opt: Option<String>,
-        passphrase_provider: Option<Handler>,
-    ) -> Result<bool> {
-        if let Some(mut passphrase_provider) = passphrase_provider {
-            let mut passphrase_provider2 = passphrase_provider.clone();
-            let mut ctx = passphrase_provider2.create_context()?;
-            if let Ok(recipients) = self.all_recipients() {
-                for recipient in recipients.iter() {
-                    if recipient.not_usable {
-                        continue;
-                    }
-                    let k = ctx.locate_key(recipient.key_id.clone()).unwrap();
-                    let mut encrypted = Vec::new();
-                    let plaintext = "";
-                    let encryption_res = ctx.encrypt(vec![&k], plaintext, &mut encrypted);
-                    if encryption_res.is_err() {
-                        error!("failed to encrypt. {:?}", encryption_res);
-                    }
-                    loop {
-                        let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
-                        debug!("decryption_res: {:?}", decryption_res);
-                        debug!("passphrase_provider: {:?}", passphrase_provider);
-                        ctx.clear_passphrase_provider();
-                        ctx.set_passphrase_provider(passphrase_provider.clone());
-                        match decryption_res {
-                            Ok(_decryption_res) => {
-                                return Ok(true);
-                            }
-                            Err(e) => {
-                                error!("failed to decrypt. {:?}", e);
-                                match e {
-                                    gpgme::Error::DECRYPT_FAILED => {}
-                                    gpgme::Error::BAD_PASSPHRASE => {}
-                                    _ => return Ok(false),
-                                }
-                            }
-                        }
-                    }
-                }
-                return Ok(false);
-            } else {
-                return Err(Error::Generic("no recipients"));
-            }
-        } else {
-            let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-            ctx.set_pinentry_mode(gpgme::PinentryMode::Ask)?;
-            if let Ok(recipients) = self.all_recipients() {
-                for recipient in recipients.iter() {
-                    if recipient.not_usable {
-                        continue;
-                    }
-                    let k = ctx.locate_key(recipient.key_id.clone())?;
-
-                    let mut encrypted = Vec::new();
-                    let plaintext = "";
-                    let encryption_res = ctx.encrypt(vec![&k], plaintext, &mut encrypted);
-                    if encryption_res.is_err() {
-                        error!("failed to encrypt. {:?}", encryption_res);
-                    }
-                    let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
-                    if let Ok(_decryption_res) = decryption_res {
-                        return Ok(true);
-                    } else {
-                        error!("failed to decrypt. {:?}", decryption_res);
-                    }
-                }
-                return Ok(false);
-            } else {
-                return Err(Error::Generic("no recipients"));
-            }
-        }
+    pub fn try_passphrase(&self, passphrase_provider: Option<Handler>) -> Result<bool> {
+        return self
+            .crypto
+            .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
     }
 
     /// Add a file to the store, and commit it to the supplied git repository.
