@@ -148,7 +148,7 @@ pub trait Crypto: Debug {
         recipients: &[Recipient],
         passphrase_provider: Option<Handler>,
         max_tries: Option<u8>,
-    ) -> Result<bool>;
+    ) -> Result<Option<Recipient>>;
     fn decrypt_string(
         &self,
         ciphertext: &[u8],
@@ -222,8 +222,10 @@ impl Clone for Handler {
     fn clone(&self) -> Self {
         Handler {
             passphrases: self.passphrases.clone(),
-            last_tried_key_id: self.last_tried_key_id.clone(),
+            last_tried_key_user_id_hint: self.last_tried_key_user_id_hint.clone(),
             request: self.request.clone(),
+            last_tried_recipient: self.last_tried_recipient.clone(),
+            recipient_to_user_id_hint: self.recipient_to_user_id_hint.clone(),
             failure_count: self.failure_count.clone(),
             err_msg: self.err_msg.clone(),
         }
@@ -233,8 +235,10 @@ impl Default for Handler {
     fn default() -> Self {
         Handler {
             passphrases: Arc::new(RwLock::new(HashMap::new())),
-            last_tried_key_id: Arc::new(Mutex::new(None)),
+            last_tried_key_user_id_hint: Arc::new(Mutex::new(None)),
+            recipient_to_user_id_hint: Arc::new(Mutex::new(HashMap::new())),
             request: None,
+            last_tried_recipient: Arc::new(Mutex::new(None)),
             failure_count: Arc::new(Mutex::new(0)),
             err_msg: Arc::new(Mutex::new(None)),
         }
@@ -245,18 +249,22 @@ impl Default for Handler {
 #[derive(Debug)]
 pub struct Handler {
     pub passphrases: Arc<RwLock<HashMap<String, String>>>,
-    pub last_tried_key_id: Arc<Mutex<Option<String>>>,
+    pub last_tried_key_user_id_hint: Arc<Mutex<Option<String>>>,
+    pub recipient_to_user_id_hint: Arc<Mutex<HashMap<String, String>>>,
     pub request: Option<String>,
+    pub last_tried_recipient: Arc<Mutex<Option<Recipient>>>,
     pub failure_count: Arc<Mutex<u8>>,
     pub err_msg: Arc<Mutex<Option<String>>>,
 }
 
 impl Handler {
-    pub fn new(passphrases: Arc<RwLock<HashMap<String, String>>>, request: Option<String>) -> Self {
+    pub fn new(passphrases: Arc<RwLock<HashMap<String, String>>>) -> Self {
         Handler {
             passphrases,
-            last_tried_key_id: Arc::new(Mutex::new(None)),
-            request,
+            last_tried_key_user_id_hint: Arc::new(Mutex::new(None)),
+            recipient_to_user_id_hint: Arc::new(Mutex::new(HashMap::new())),
+            request: None,
+            last_tried_recipient: Arc::new(Mutex::new(None)),
             failure_count: Arc::new(Mutex::new(0)),
             err_msg: Arc::new(Mutex::new(None)),
         }
@@ -320,11 +328,34 @@ impl StatusHandler for Handler {
         args: Option<&'b CStr>,
     ) -> gpgme::Result<()> {
         if args.is_some_and(move |s| s.to_str().unwrap_or_default() == "ERROR") {
-            let last_tried_key_id = self.last_tried_key_id.lock().unwrap().to_owned();
-            if let Some(ref last_tried_key_id) = last_tried_key_id {
-                self.passphrases.write().unwrap().remove(last_tried_key_id);
+            let last_tried_recipient = self.last_tried_recipient.lock().unwrap().to_owned();
+            if let Some(ref last_tried_recipient) = last_tried_recipient {
+                if let Some(store_id) = self
+                    .recipient_to_user_id_hint
+                    .lock()
+                    .unwrap()
+                    .get(last_tried_recipient.key_id.as_str())
+                    .map(|s| s.to_owned())
+                {
+                    return self
+                        .passphrases
+                        .write()
+                        .unwrap()
+                        .remove(&store_id)
+                        .map(|_| ())
+                        .ok_or(gpgme::Error::NOT_FOUND);
+                } else {
+                    return self
+                        .passphrases
+                        .write()
+                        .unwrap()
+                        .remove(last_tried_recipient.key_id.as_str())
+                        .map(|_| ())
+                        .ok_or(gpgme::Error::NOT_FOUND);
+                }
+            } else {
+                return Err(gpgme::Error::NOT_FOUND);
             }
-            return Ok(());
         } else {
             Ok(())
         }
@@ -336,29 +367,35 @@ impl gpgme::PassphraseProvider for Handler {
         request: PassphraseRequest,
         out: &mut dyn std::io::Write,
     ) -> gpgme::error::Result<()> {
-        let user_id = request.user_id_hint().map(|s| s.to_string()).ok();
-        debug!("self: {:?}", self);
-
-        if let Some(ref user_id) = user_id {
-            let mut locked = self.last_tried_key_id.lock().unwrap();
-            locked.replace(user_id.to_owned());
+        let user_id_hint = request.user_id_hint().map(|s| s.to_string()).ok();
+        if let Some(ref user_id_hint) = user_id_hint {
+            if let Some(ref recipient) = self.last_tried_recipient.lock().unwrap().as_ref() {
+                self.recipient_to_user_id_hint
+                    .lock()
+                    .unwrap()
+                    .insert(recipient.key_id.clone(), user_id_hint.clone());
+            }
+        }
+        if let Some(ref user_id_hint) = user_id_hint {
+            let mut locked = self.last_tried_key_user_id_hint.lock().unwrap();
+            locked.replace(user_id_hint.clone());
         }
         let passphrase = {
-            if request.prev_attempt_failed && user_id.is_some() {
+            if request.prev_attempt_failed && user_id_hint.is_some() {
                 self.passphrases
                     .write()
                     .unwrap()
-                    .remove(user_id.as_ref().unwrap());
+                    .remove(user_id_hint.as_ref().unwrap());
             }
             let passphrases = self.passphrases.clone();
             let read_lock = passphrases.read();
-            if let Some(user_id) = user_id {
+            if let Some(user_id_hint) = user_id_hint {
                 let res = if let Ok(locked) = read_lock {
-                    let passphrase = if let Some(passphrase) = locked.get(&user_id) {
+                    let passphrase = if let Some(passphrase) = locked.get(&user_id_hint) {
                         Ok(passphrase.to_owned())
                     } else {
                         let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
-                        let res = self.prompt_pinentry(Some(&user_id), err_msg);
+                        let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
                         res.map_err(|e| {
                             error!("failed to prompt pinentry: {:?}", e);
                             gpgme::error::Error::PIN_ENTRY
@@ -370,7 +407,7 @@ impl gpgme::PassphraseProvider for Handler {
                     error!("failed to lock lock passphrase cache. {:?}", read_lock);
                     drop(read_lock);
                     let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
-                    let res = self.prompt_pinentry(Some(&user_id), err_msg);
+                    let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
                     res.map_err(|e| {
                         error!("failed to prompt pinentry: {:?}", e);
                         gpgme::error::Error::PIN_ENTRY
@@ -380,8 +417,7 @@ impl gpgme::PassphraseProvider for Handler {
                     self.passphrases
                         .write()
                         .unwrap()
-                        .insert(user_id, res.as_ref().unwrap().to_owned());
-                } else {
+                        .insert(user_id_hint, res.as_ref().unwrap().to_owned());
                 }
                 res
             } else {
@@ -613,13 +649,18 @@ impl Crypto for GpgMe {
         recipients: &[Recipient],
         passphrase_provider: Option<Handler>,
         max_tries: Option<u8>,
-    ) -> Result<bool> {
+    ) -> Result<Option<Recipient>> {
         if let Some(mut passphrase_provider) = passphrase_provider {
             let mut ctx = passphrase_provider.create_context()?;
             for recipient in recipients.iter() {
                 if recipient.not_usable {
                     continue;
                 }
+                *(passphrase_provider
+                    .last_tried_recipient
+                    .clone()
+                    .lock()
+                    .unwrap()) = Some(recipient.clone());
                 let k = ctx.locate_key(recipient.key_id.clone()).unwrap();
                 let mut encrypted = Vec::new();
                 ctx.encrypt(vec![&k], "", &mut encrypted)?;
@@ -628,7 +669,9 @@ impl Crypto for GpgMe {
                     let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
                     match decryption_res {
                         Ok(_decryption_res) => {
-                            return Ok(true);
+                            *passphrase_provider.failure_count.lock().unwrap() = 0;
+                            passphrase_provider.err_msg.lock().unwrap().take();
+                            return Ok(Some(recipient.clone()));
                         }
                         Err(e) => match gpgme::Error::from_code(e.code()) {
                             gpgme::Error::BAD_PASSPHRASE => {
@@ -641,14 +684,17 @@ impl Crypto for GpgMe {
                                 break;
                             }
                             _ => {
-                                return Ok(false);
+                                *passphrase_provider.failure_count.lock().unwrap() = 0;
+                                passphrase_provider.err_msg.lock().unwrap().take();
+                                return Ok(None);
                             }
                         },
                     }
                 }
+                *passphrase_provider.failure_count.lock().unwrap() = 0;
                 passphrase_provider.err_msg.lock().unwrap().take();
             }
-            return Ok(false);
+            return Ok(None);
         } else {
             let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
             ctx.set_pinentry_mode(gpgme::PinentryMode::Ask)?;
@@ -663,10 +709,10 @@ impl Crypto for GpgMe {
                 ctx.encrypt(vec![&k], plaintext, &mut encrypted)?;
                 let decryption_res = ctx.decrypt(&mut encrypted, &mut Vec::new());
                 if let Ok(_decryption_res) = decryption_res {
-                    return Ok(true);
+                    return Ok(Some(recipient.clone()));
                 }
             }
-            return Ok(false);
+            return Ok(None);
         }
     }
 }

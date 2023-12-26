@@ -61,6 +61,8 @@ pub struct PasswordStore {
     crypto: Box<dyn Crypto + Send + Sync>,
     /// The home dir of the user, if it exists
     user_home: Option<PathBuf>,
+    //id of key used to sign into the store (if any) - one of recipients in .gpg-id file
+    login_recipient: Option<Recipient>,
 }
 impl Debug for PasswordStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,6 +86,7 @@ impl Default for PasswordStore {
             passwords: vec![],
             crypto: Box::new(GpgMe {}),
             user_home: None,
+            login_recipient: None,
         }
     }
 }
@@ -118,6 +121,7 @@ impl PasswordStore {
             passwords: [].to_vec(),
             crypto,
             user_home: home.clone(),
+            login_recipient: None,
         };
 
         if !store.valid_gpg_signing_keys.is_empty() {
@@ -125,6 +129,13 @@ impl PasswordStore {
         }
 
         Ok(store)
+    }
+
+    pub fn set_login_recipient(&mut self, recipient: Recipient) {
+        self.login_recipient = Some(recipient);
+    }
+    pub fn get_login_recipient(&self) -> Option<&Recipient> {
+        self.login_recipient.as_ref()
     }
 
     /// Creates a `PasswordStore`, including creating directories and initializing the .gpg-id file
@@ -211,6 +222,7 @@ impl PasswordStore {
             passwords: [].to_vec(),
             crypto,
             user_home: home.clone(),
+            login_recipient: None,
         };
 
         Ok(store)
@@ -516,16 +528,8 @@ impl PasswordStore {
         let stores_res = config.get("stores");
         if let Ok(stores) = stores_res {
             let stores: HashMap<String, config::Value> = stores;
-            for store_name in stores.keys() {
-                let store: HashMap<String, config::Value> = stores
-                    .get(store_name)
-                    .ok_or(pass::Error::GenericDyn(format!(
-                        "No stoed named {} found.\nPassed config: {:?}, home: {:?}",
-                        store_name, config, home
-                    )))?
-                    .clone()
-                    .into_table()?;
-
+            for (store_name, store) in stores.iter() {
+                let store = store.clone().into_table()?;
                 let password_store_dir_opt = store.get("path");
                 let valid_signing_keys_opt = store.get("valid_signing_keys");
                 if let Some(store_dir) = password_store_dir_opt {
@@ -814,13 +818,32 @@ impl PasswordStore {
         }
 
         let repo = repo?;
-
         // First, collect all files we need to find the first commit for
-        let password_path_glob = self.root.join("**/*.gpg");
+
+        // if .gpg files are direct children of the root, add them
+        let password_path_glob = self.root.join("*.gpg");
         let existing_iter = glob::glob(&password_path_glob.to_string_lossy())?;
         let mut files_to_find: Vec<PathBuf> = vec![];
         for existing_file in existing_iter {
-            files_to_find.push(existing_file?.strip_prefix(&self.root)?.to_path_buf());
+            let existing_file = existing_file?;
+            let file_to_find = existing_file.strip_prefix(&self.root)?;
+
+            files_to_find.push(file_to_find.to_path_buf());
+        }
+
+        // if files are in subdirectories, add them if the subdirectory is not another password store
+        let password_path_glob = self.root.join("*/*.gpg");
+        let existing_iter = glob::glob(&password_path_glob.to_string_lossy())?;
+        for existing_file in existing_iter {
+            let existing_file = existing_file?;
+            if let Some(parent) = existing_file.parent() {
+                if parent.join(".git").exists() {
+                    continue;
+                }
+            }
+            let file_to_find = existing_file.strip_prefix(&self.root)?;
+
+            files_to_find.push(file_to_find.to_path_buf());
         }
 
         if files_to_find.is_empty() {
@@ -963,7 +986,10 @@ impl PasswordStore {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_dir() {
-                    Self::visit_dirs(&path, result)?;
+                    //don't recurse into another store directory
+                    if !path.join(".gpg-id").exists() {
+                        Self::visit_dirs(&path, result)?;
+                    }
                 } else if entry.file_name() == ".gpg-id" {
                     result.push(entry.path());
                 }
@@ -1071,10 +1097,20 @@ impl PasswordStore {
         self.add(&names, &message, None, true)?;
         Ok(())
     }
-    pub fn try_passphrase(&self, passphrase_provider: Option<Handler>) -> Result<bool> {
-        return self
-            .crypto
-            .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
+    pub fn try_passphrase(&mut self, passphrase_provider: Option<Handler>) -> Result<bool> {
+        let res =
+            self.crypto
+                .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
+        if let Ok(login_recipient_opt) = res {
+            if let Some(login_recipient) = login_recipient_opt {
+                self.set_login_recipient(login_recipient);
+                return Ok(true);
+            } else {
+                return Ok(false);
+            }
+        } else {
+            return res.map(|_| false);
+        }
     }
 
     /// Add a file to the store, and commit it to the supplied git repository.
