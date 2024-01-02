@@ -8,7 +8,7 @@ use std::{
 
 use hex::FromHex;
 
-use crate::crypto::FindSigningFingerprintStrategy;
+use crate::crypto::{FindSigningFingerprintStrategy, Handler};
 pub use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -169,6 +169,8 @@ pub struct Comment {
 pub struct Recipient {
     /// Human readable name of the person.
     pub name: String,
+    /// Human readable name of the person.
+    pub email: String,
     /// The comment field from the .gpg-id file, not including the leading '#' characters.
     pub comment: Comment,
     /// Machine readable identity taken from the .gpg-id file, in the form of a gpg key id
@@ -190,6 +192,7 @@ impl Recipient {
     /// Constructs a `Recipient` object.
     fn new(
         name: String,
+        email: String,
         comment: Comment,
         key_id: String,
         fingerprint: Option<[u8; 20]>,
@@ -199,6 +202,7 @@ impl Recipient {
     ) -> Self {
         Self {
             name,
+            email,
             comment,
             key_id,
             fingerprint,
@@ -230,6 +234,7 @@ impl Recipient {
         if key_result.is_err() {
             return Ok(Recipient::new(
                 "key id not in keyring".to_owned(),
+                "key id not in keyring".to_owned(),
                 comment,
                 key_id.to_owned(),
                 None,
@@ -247,13 +252,17 @@ impl Recipient {
             0 => "?".to_owned(),
             _ => names.pop().unwrap(),
         };
-
+        let email = real_key
+            .primary_user_id()
+            .unwrap_or("?".to_string())
+            .to_owned();
         let trusts: HashMap<[u8; 20], OwnerTrustLevel> = crypto.get_all_trust_items()?;
 
         let fingerprint = real_key.fingerprint()?;
 
         Ok(Self::new(
             name,
+            email,
             comment,
             key_id.to_owned(),
             Some(fingerprint),
@@ -316,6 +325,7 @@ impl Recipient {
 
                         Self::new(
                             err.to_string(),
+                            err.to_string(),
                             Comment {
                                 pre_comment: comment_opt,
                                 post_comment: key.post_comment,
@@ -342,6 +352,7 @@ impl Recipient {
         recipients_file: &Path,
         valid_gpg_signing_keys: &[[u8; 20]],
         crypto: &(dyn crate::crypto::Crypto + Send),
+        passphrase_provider: Option<Handler>,
     ) -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -378,14 +389,15 @@ impl Recipient {
             file_content.push('\n');
         }
         file.write_all(file_content.as_bytes())?;
+        let repo_config: git2::Config = git2::Config::open_default()?;
 
         if !valid_gpg_signing_keys.is_empty() {
             let output = crypto.sign_string(
                 &file_content,
                 valid_gpg_signing_keys,
                 &FindSigningFingerprintStrategy::GPG,
-                None,
-                None,
+                passphrase_provider,
+                Some(repo_config),
             )?;
 
             let recipient_sig_filename: PathBuf = {
@@ -416,6 +428,7 @@ impl Recipient {
         store_root_path: &Path,
         valid_gpg_signing_keys: &[[u8; 20]],
         crypto: &(dyn crate::crypto::Crypto + Send),
+        passphrase_provider: Option<Handler>,
     ) -> Result<()> {
         let mut recipients: Vec<Recipient> = Self::all_recipients(recipients_file, crypto)?;
 
@@ -439,6 +452,7 @@ impl Recipient {
                 recipients_file,
                 valid_gpg_signing_keys,
                 crypto,
+                passphrase_provider,
             )
         }
     }
@@ -451,6 +465,7 @@ impl Recipient {
         recipients_file: &Path,
         valid_gpg_signing_keys: &[[u8; 20]],
         crypto: &(dyn crate::crypto::Crypto + Send),
+        passphrase_provider: Option<Handler>,
     ) -> Result<()> {
         let mut recipients: Vec<Self> = Self::all_recipients(recipients_file, crypto)?;
 
@@ -468,6 +483,7 @@ impl Recipient {
             recipients_file,
             valid_gpg_signing_keys,
             crypto,
+            passphrase_provider,
         )
     }
 }

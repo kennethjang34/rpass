@@ -16,8 +16,8 @@ use crate::{
     crypto::VerificationError::InfrastructureError,
     signature::{KeyRingStatus, Recipient, SignatureStatus},
 };
-use gpgme::PassphraseRequest;
-use gpgme::StatusHandler;
+use gpgme::{Context, ContextWithCallbacks, PassphraseRequest};
+use gpgme::{KeyListMode, StatusHandler};
 use hex::FromHex;
 
 /// The different pgp implementations we support
@@ -26,6 +26,15 @@ use hex::FromHex;
 pub enum CryptoImpl {
     /// Implemented with the help of the gpgme crate
     GpgMe,
+}
+
+impl CryptoImpl {
+    /// Returns a new instance of the crypto implementation
+    pub fn get_crypto_type(&self) -> Result<Box<dyn Crypto + Send>> {
+        match self {
+            Self::GpgMe => Ok(Box::new(GpgMe {})),
+        }
+    }
 }
 
 impl std::convert::TryFrom<&str> for CryptoImpl {
@@ -40,7 +49,17 @@ impl std::convert::TryFrom<&str> for CryptoImpl {
         }
     }
 }
-
+impl Debug for dyn Key {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Key {{")?;
+        write!(f, "user_id_names: {:?}", self.user_id_names())?;
+        write!(f, ", fingerprint: {:?}", self.fingerprint())?;
+        write!(f, ", is_not_usable: {:?}", self.is_not_usable())?;
+        write!(f, ", has_secret: {:?}", self.has_secret())?;
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
 impl Display for CryptoImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         match self {
@@ -100,11 +119,20 @@ pub trait Key {
     /// returns a list of names associated with the key
     fn user_id_names(&self) -> Vec<String>;
 
+    fn get_user_name(&self) -> Option<String>;
+
     /// returns the keys fingerprint
     fn fingerprint(&self) -> Result<[u8; 20]>;
+    fn primary_user_id(&self) -> Option<String>;
 
     /// returns if the key isn't usable
     fn is_not_usable(&self) -> bool;
+    /// returns if the key isn't usable
+    fn has_secret(&self) -> bool;
+    /// returns if the key can sign
+    fn can_sign(&self) -> bool;
+    /// returns if the key can encrypt
+    fn can_encrypt(&self) -> bool;
 }
 
 /// A key gotten from gpgme
@@ -120,11 +148,21 @@ impl Key for GpgMeKey {
             .map(|user_id| user_id.name().unwrap_or("?").to_owned())
             .collect()
     }
+    fn get_user_name(&self) -> Option<String> {
+        self.key
+            .user_ids()
+            .next()
+            .map(|user_id| user_id.name().unwrap_or("?").to_owned())
+    }
 
     fn fingerprint(&self) -> Result<[u8; 20]> {
         let fp = self.key.fingerprint()?;
 
         Ok(<[u8; 20]>::from_hex(fp)?)
+    }
+    fn primary_user_id(&self) -> Option<String> {
+        let user_id = self.key.user_ids().next();
+        user_id.map(|user_id| user_id.email().unwrap_or("?").to_owned())
     }
 
     fn is_not_usable(&self) -> bool {
@@ -133,6 +171,30 @@ impl Key for GpgMeKey {
             || self.key.is_expired()
             || self.key.is_disabled()
             || self.key.is_invalid()
+    }
+    fn has_secret(&self) -> bool {
+        self.key.has_secret()
+    }
+    fn can_sign(&self) -> bool {
+        self.key.can_sign()
+    }
+    fn can_encrypt(&self) -> bool {
+        self.key.can_encrypt()
+    }
+}
+pub fn get_keys(crypto_impl: CryptoImpl) -> Result<Vec<Box<dyn Key>>> {
+    match crypto_impl {
+        CryptoImpl::GpgMe => {
+            let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+            ctx.set_key_list_mode(KeyListMode::WITH_SECRET)?;
+            let keys = ctx.keys()?;
+            let mut res = Vec::new();
+            for key in keys {
+                let key = key?;
+                res.push(Box::new(GpgMeKey { key }) as Box<dyn Key>);
+            }
+            Ok(res)
+        }
     }
 }
 
@@ -184,6 +246,12 @@ pub trait Crypto: Debug {
         sig: &[u8],
         valid_signing_keys: &[[u8; 20]],
     ) -> std::result::Result<SignatureStatus, VerificationError>;
+    // fn verify_sign_uid(
+    //     &self,
+    //     data: &[u8],
+    //     sig: &[u8],
+    //     valid_signing_keys: &[String],
+    // ) -> std::result::Result<SignatureStatus, VerificationError>;
 
     /// Returns true if a recipient is in the users keyring.
     fn is_key_in_keyring(&self, recipient: &Recipient) -> Result<bool>;
@@ -244,6 +312,33 @@ impl Default for Handler {
         }
     }
 }
+
+pub fn get_signing_key(
+    ctx: &mut Context,
+    strategy: &FindSigningFingerprintStrategy,
+    valid_gpg_signing_keys: &[[u8; 20]],
+    config: git2::Config,
+) -> Result<Option<String>> {
+    let signing_key = match strategy {
+        FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
+        FindSigningFingerprintStrategy::GPG => {
+            let mut key_opt: Option<gpgme::Key> = None;
+            for key_id in valid_gpg_signing_keys {
+                let key_res = ctx.get_key(hex::encode_upper(key_id));
+                if let Ok(r) = key_res {
+                    key_opt = Some(r);
+                }
+            }
+
+            if let Some(key) = key_opt {
+                key.fingerprint()?.to_owned()
+            } else {
+                return Err(Error::Generic("no valid signing key"));
+            }
+        }
+    };
+    return Ok(Some(signing_key));
+}
 // unsafe impl Sync for PassphraseProvider {}
 // unsafe impl Send for PassphraseProvider {}
 #[derive(Debug)]
@@ -272,10 +367,44 @@ impl Handler {
     pub fn create_context<'a, 'b>(&'a mut self) -> gpgme::Result<gpgme::ContextWithCallbacks<'b>> {
         let ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
         let mut ctx = ctx.set_passphrase_provider(self.clone());
+        ctx.set_key_list_mode(KeyListMode::WITH_SECRET)?;
+        ctx.set_key_list_mode(KeyListMode::WITH_KEYGRIP)?;
         ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
         ctx.set_status_handler(self.clone());
         ctx.set_progress_reporter(|_progress_info: gpgme::ProgressInfo<'_>| {});
         Ok(ctx)
+    }
+    pub fn clear_passphrases(&mut self) -> Result<()> {
+        let mut write_lock = self
+            .passphrases
+            .write()
+            .map_err(|e| Error::GenericDyn(format!("failed to lock passphrases. {:?}", e)))?;
+        write_lock.clear();
+        return Ok(());
+    }
+    pub fn remove_passphrase(&mut self, key_id: &str, include_subkeys: bool) -> Result<()> {
+        let mut write_lock = self
+            .passphrases
+            .write()
+            .map_err(|e| Error::GenericDyn(format!("failed to lock passphrases. {:?}", e)))?;
+        if include_subkeys {
+            let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+            if let Ok(key) = ctx.get_secret_key(key_id) {
+                for subkey in key.subkeys() {
+                    let key_id = subkey.id().unwrap();
+                    write_lock.remove(key_id);
+                }
+            }
+        } else {
+            write_lock.remove(key_id);
+        }
+        return Ok(());
+    }
+}
+
+impl From<&mut Handler> for ContextWithCallbacks<'_> {
+    fn from(handler: &mut Handler) -> Self {
+        handler.create_context().unwrap()
     }
 }
 impl Handler {
@@ -327,7 +456,10 @@ impl StatusHandler for Handler {
         _keyword: Option<&'b CStr>,
         args: Option<&'b CStr>,
     ) -> gpgme::Result<()> {
-        if args.is_some_and(move |s| s.to_str().unwrap_or_default() == "ERROR") {
+        if args.is_some_and(move |s| {
+            let s = s.to_str().unwrap_or_default();
+            s == "ERROR" || s == "FAILURE"
+        }) {
             let last_tried_recipient = self.last_tried_recipient.lock().unwrap().to_owned();
             if let Some(ref last_tried_recipient) = last_tried_recipient {
                 if let Some(store_id) = self
@@ -367,13 +499,18 @@ impl gpgme::PassphraseProvider for Handler {
         request: PassphraseRequest,
         out: &mut dyn std::io::Write,
     ) -> gpgme::error::Result<()> {
-        let user_id_hint = request.user_id_hint().map(|s| s.to_string()).ok();
-        if let Some(ref user_id_hint) = user_id_hint {
-            if let Some(ref recipient) = self.last_tried_recipient.lock().unwrap().as_ref() {
-                self.recipient_to_user_id_hint
-                    .lock()
-                    .unwrap()
-                    .insert(recipient.key_id.clone(), user_id_hint.clone());
+        let mut user_id_hint = request.user_id_hint().map(|s| s.to_string()).ok();
+        if let Some(user_id_hint) = user_id_hint.as_mut() {
+            let mut user_id_hint_iter = user_id_hint.split(" ");
+            let next_hint = user_id_hint_iter.next();
+            if let Some(next_hint) = next_hint {
+                *user_id_hint = next_hint.to_string();
+                if let Some(ref recipient) = self.last_tried_recipient.lock().unwrap().as_ref() {
+                    self.recipient_to_user_id_hint
+                        .lock()
+                        .unwrap()
+                        .insert(recipient.key_id.clone(), user_id_hint.clone());
+                }
             }
         }
         if let Some(ref user_id_hint) = user_id_hint {
@@ -442,18 +579,17 @@ impl Debug for GpgMe {
         write!(f, "GpgMe")
     }
 }
+
 impl Crypto for GpgMe {
     fn decrypt_string(
         &self,
         ciphertext: &[u8],
         passphrase_provider: Option<Handler>,
     ) -> Result<String> {
-        let passphrase_provider = passphrase_provider.unwrap_or_default();
-        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+        let mut passphrase_provider = passphrase_provider.unwrap_or_default();
         let mut output = Vec::new();
-        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        let mut ctx_with_passphrase_provider = ctx.set_passphrase_provider(passphrase_provider);
-        ctx_with_passphrase_provider.decrypt(ciphertext, &mut output)?;
+        let mut ctx = passphrase_provider.create_context()?;
+        ctx.decrypt(ciphertext, &mut output)?;
         return Ok(String::from_utf8(output)?);
     }
 
@@ -484,47 +620,41 @@ impl Crypto for GpgMe {
         to_sign: &str,
         valid_gpg_signing_keys: &[[u8; 20]],
         strategy: &FindSigningFingerprintStrategy,
-        // passphrase_provider: Box<dyn gpgme::PassphraseProvider + Send + Sync>,
         passphrase_provider: Option<Handler>,
         config: Option<git2::Config>,
     ) -> Result<String> {
-        let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
-        ctx.set_pinentry_mode(gpgme::PinentryMode::Loopback)?;
-        let mut ctx = ctx.set_passphrase_provider(passphrase_provider.unwrap_or_default());
         let config = config.unwrap_or_else(|| git2::Config::open_default().unwrap());
-        let signing_key = match strategy {
-            FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
-            FindSigningFingerprintStrategy::GPG => {
-                let mut key_opt: Option<gpgme::Key> = None;
 
-                for key_id in valid_gpg_signing_keys {
-                    let key_res = ctx.get_key(hex::encode_upper(key_id));
-
-                    if let Ok(r) = key_res {
-                        key_opt = Some(r);
-                    }
-                }
-
-                if let Some(key) = key_opt {
-                    key.fingerprint()?.to_owned()
-                } else {
-                    return Err(Error::Generic("no valid signing key"));
-                }
+        if let Some(mut passphrase_provider) = passphrase_provider {
+            let mut ctx = passphrase_provider.create_context()?;
+            let signing_key = get_signing_key(&mut ctx, strategy, valid_gpg_signing_keys, config)?
+                .ok_or(Error::Generic("no valid signing key"))?;
+            ctx.set_armor(true);
+            let key = ctx.get_secret_key(signing_key)?;
+            ctx.add_signer(&key)?;
+            let mut output = Vec::new();
+            let signature = ctx.sign_detached(to_sign, &mut output);
+            if let Err(e) = signature {
+                return Err(Error::Gpg(e));
             }
-        };
 
-        ctx.set_armor(true);
-        let key = ctx.get_secret_key(signing_key)?;
+            Ok(String::from_utf8(output)?)
+        } else {
+            let mut ctx = gpgme::Context::from_protocol(gpgme::Protocol::OpenPgp)?;
+            ctx.set_armor(true);
+            let signing_key = get_signing_key(&mut ctx, strategy, valid_gpg_signing_keys, config)?
+                .ok_or(Error::Generic("no valid signing key"))?;
+            let key = ctx.get_secret_key(signing_key)?;
 
-        ctx.add_signer(&key)?;
-        let mut output = Vec::new();
-        let signature = ctx.sign_detached(to_sign, &mut output);
+            ctx.add_signer(&key)?;
+            let mut output = Vec::new();
+            let signature = ctx.sign_detached(to_sign, &mut output);
+            if let Err(e) = signature {
+                return Err(Error::Gpg(e));
+            }
 
-        if let Err(e) = signature {
-            return Err(Error::Gpg(e));
+            Ok(String::from_utf8(output)?)
         }
-
-        Ok(String::from_utf8(output)?)
     }
 
     fn verify_sign(
@@ -543,15 +673,22 @@ impl Crypto for GpgMe {
         let mut sig_sum = None;
 
         for (i, s) in result.signatures().enumerate() {
-            let fpr = s
+            let fpt_hex = s
                 .fingerprint()
                 .map_err(|e| VerificationError::InfrastructureError(format!("{e:?}")))?;
 
-            let fpr = <[u8; 20]>::from_hex(fpr)
+            let raw_fpt = <[u8; 20]>::from_hex(fpt_hex)
                 .map_err(|e| VerificationError::InfrastructureError(format!("{e:?}")))?;
 
-            if !valid_signing_keys.contains(&fpr) {
-                return Err(VerificationError::SignatureFromWrongRecipient);
+            if !valid_signing_keys.contains(&raw_fpt) {
+                let key = ctx.get_key(fpt_hex).unwrap();
+                let primary_key = key.primary_key().unwrap();
+                let fpr = primary_key.fingerprint().unwrap();
+                let fpr = <[u8; 20]>::from_hex(fpr)
+                    .map_err(|e| VerificationError::InfrastructureError(format!("{e:?}")))?;
+                if !valid_signing_keys.contains(&fpr) {
+                    return Err(VerificationError::SignatureFromWrongRecipient);
+                }
             }
             if i == 0 {
                 sig_sum = Some(s.summary());

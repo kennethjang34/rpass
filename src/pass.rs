@@ -91,6 +91,12 @@ impl Default for PasswordStore {
     }
 }
 
+pub fn get_crypto(crypto_impl: &CryptoImpl) -> Box<dyn Crypto + Send + Sync> {
+    match crypto_impl {
+        CryptoImpl::GpgMe => Box::new(GpgMe {}),
+    }
+}
+
 impl PasswordStore {
     /// Constructs a `PasswordStore` object. If `password_store_signing_key` is present,
     /// the function verifies that the .gpg-id file is signed correctly
@@ -146,8 +152,10 @@ impl PasswordStore {
         store_name: &str,
         password_store_dir: &Option<PathBuf>,
         recipients: &[Recipient],
-        recipients_as_signers: bool,
+        valid_gpg_id_signers: &[Recipient],
+        signer: &Option<Recipient>,
         home: &Option<PathBuf>,
+        passphrase_provider: Option<Handler>,
     ) -> Result<Self> {
         let pass_home = password_dir_raw(password_store_dir, home);
         if pass_home.exists() {
@@ -171,38 +179,47 @@ impl PasswordStore {
 
         let crypto = Box::new(GpgMe {});
 
-        let signing_keys = {
-            if recipients_as_signers {
-                let mut fingerprints = vec![];
-                for r in recipients {
-                    fingerprints.push(r.fingerprint.ok_or_else(|| {
-                        Error::GenericDyn(format!(
-                            "recipient {} ({}) doesn't have a fingerprint",
-                            r.name, r.key_id
-                        ))
-                    })?);
+        let valid_signing_keys =
+            {
+                if valid_gpg_id_signers.len() > 0 {
+                    let mut fingerprints = vec![];
+                    for signer in valid_gpg_id_signers {
+                        let raw_key_id = hex::decode(signer.key_id.clone())?;
+                        fingerprints.push(raw_key_id.try_into().map_err(|_| {
+                            Error::Generic("failed to parse key id into fingerprint")
+                        })?);
+                    }
+                    fingerprints
+                } else {
+                    vec![]
                 }
-                fingerprints
-            } else {
-                vec![]
-            }
-        };
+            };
 
         create_dir_all(&pass_home)?;
         Recipient::write_recipients_file(
             recipients,
             &pass_home.join(".gpg-id"),
-            &signing_keys,
+            &valid_signing_keys,
             crypto.as_ref(),
+            None,
         )?;
         let repo = Repository::init_git_repo(&pass_home)?;
+        if let Some(repo_signer) = signer {
+            if let Ok(mut config) = repo.config() {
+                let fpt = repo_signer.fingerprint.unwrap();
+                let fpt_str = hex::encode_upper(fpt);
+                config.set_str("user.name", &repo_signer.name)?;
+                config.set_str("user.email", &repo_signer.email)?;
+                config.set_str("user.signingkey", &fpt_str)?;
+            }
+        }
 
-        if recipients_as_signers {
+        if valid_signing_keys.len() > 0 {
             repo.add_file(
                 &[PathBuf::from(".gpg-id"), PathBuf::from(".gpg-id.sig")],
                 "initial commit by Rpass",
                 crypto.as_ref(),
-                None,
+                passphrase_provider.clone(),
                 true,
             )?;
         } else {
@@ -210,7 +227,7 @@ impl PasswordStore {
                 &[PathBuf::from(".gpg-id")],
                 "initial commit by Rpass",
                 crypto.as_ref(),
-                None,
+                passphrase_provider.clone(),
                 true,
             )?;
         }
@@ -218,13 +235,12 @@ impl PasswordStore {
         let store = Self {
             name: store_name.to_owned(),
             root: pass_home.canonicalize()?,
-            valid_gpg_signing_keys: signing_keys,
+            valid_gpg_signing_keys: valid_signing_keys,
             passwords: [].to_vec(),
             crypto,
             user_home: home.clone(),
             login_recipient: None,
         };
-
         Ok(store)
     }
     pub fn remove_entry(&mut self, id: &str) -> pass::Result<PasswordEntry> {
@@ -564,17 +580,9 @@ impl PasswordStore {
                 }
             }
         } else if final_stores.is_empty() {
-            if let Some(default_path) = home.as_ref().map(|h| h.join(".password_store")) {
-                if default_path.exists() {
-                    final_stores.push(PasswordStore::new(
-                        "default",
-                        &Some(default_path),
-                        &None,
-                        home,
-                        &CryptoImpl::GpgMe,
-                    )?);
-                }
-            }
+            return Err(pass::Error::Generic(
+                "No password store found. Please create default store in '~/.password-store' first",
+            ));
         }
 
         Ok(final_stores)
@@ -1004,13 +1012,19 @@ impl PasswordStore {
         Ok(results)
     }
 
-    fn remove_recipient_inner(&self, r: &Recipient, path: &Path) -> Result<()> {
+    fn remove_recipient_inner(
+        &self,
+        r: &Recipient,
+        path: &Path,
+        passphrase_provider: Option<Handler>,
+    ) -> Result<()> {
         Recipient::remove_recipient_from_file(
             r,
             &self.recipients_file_for_dir(path)?,
             &self.root,
             &self.valid_gpg_signing_keys,
             self.crypto.as_ref(),
+            passphrase_provider,
         )?;
         self.reencrypt_all_password_entries()
     }
@@ -1018,11 +1032,16 @@ impl PasswordStore {
     /// Removes a key from the .gpg-id file and re-encrypts all the passwords
     /// # Errors
     /// Returns an `Err` if the gpg_id file should be verified and it can't be or if the recipient is the last one.
-    pub fn remove_recipient(&self, r: &Recipient, path: &Path) -> Result<()> {
+    pub fn remove_recipient(
+        &self,
+        r: &Recipient,
+        path: &Path,
+        passphrase_provider: Option<Handler>,
+    ) -> Result<()> {
         let gpg_id_file = &self.recipients_file_for_dir(path)?;
         let gpg_id_file_content = std::fs::read_to_string(gpg_id_file)?;
 
-        let res = self.remove_recipient_inner(r, path);
+        let res = self.remove_recipient_inner(r, path, passphrase_provider);
 
         if res.is_err() {
             std::fs::write(gpg_id_file, gpg_id_file_content)?;
@@ -1034,7 +1053,13 @@ impl PasswordStore {
     /// # Errors
     /// Returns an `Err` if the gpg_id file should be verified and it can't be or there is some problem with
     /// the encryption.
-    pub fn add_recipient(&mut self, r: &Recipient, path: &Path, config_path: &Path) -> Result<()> {
+    pub fn add_recipient(
+        &mut self,
+        r: &Recipient,
+        path: &Path,
+        config_path: &Path,
+        passphrase_provider: Option<Handler>,
+    ) -> Result<()> {
         if !self.crypto.is_key_in_keyring(r)? {
             self.crypto.pull_keys(&[r], config_path)?;
         }
@@ -1063,6 +1088,7 @@ impl PasswordStore {
             &self.recipients_file_for_dir(path)?,
             &self.valid_gpg_signing_keys,
             self.crypto.as_ref(),
+            passphrase_provider,
         )?;
         self.reencrypt_all_password_entries()
     }
@@ -1098,6 +1124,7 @@ impl PasswordStore {
         Ok(())
     }
     pub fn try_passphrase(&mut self, passphrase_provider: Option<Handler>) -> Result<bool> {
+        debug!("All recipients: {:?}", self.all_recipients()?);
         let res =
             self.crypto
                 .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
@@ -1236,9 +1263,6 @@ impl PasswordStore {
         Ok(passwords.len() - 1)
     }
 
-    /// Creates a `Recipient` their key_id.
-    /// # Errors
-    /// Returns an `Err` if there is anything wrong with the `Recipient`
     pub fn recipient_from(
         &self,
         key_id: &str,
@@ -1246,6 +1270,10 @@ impl PasswordStore {
         post_comment: Option<String>,
     ) -> Result<Recipient> {
         crate::signature::Recipient::from(key_id, pre_comment, post_comment, self.crypto.as_ref())
+    }
+    // delete store. if failed, return original one
+    pub fn delete_store(self) -> std::result::Result<(), Self> {
+        todo!()
     }
 }
 

@@ -306,7 +306,6 @@ impl RepoExt for git2::Repository {
                 &[],
                 &FindSigningFingerprintStrategy::GIT,
                 passphrase_provider,
-                // passphrase.map(|s| s.to_owned()),
                 self.config().ok(),
             )?;
 
