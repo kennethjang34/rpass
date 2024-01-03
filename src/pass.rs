@@ -1137,7 +1137,6 @@ impl PasswordStore {
         Ok(())
     }
     pub fn try_passphrase(&mut self, passphrase_provider: Option<Handler>) -> Result<bool> {
-        debug!("All recipients: {:?}", self.all_recipients()?);
         let res =
             self.crypto
                 .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
