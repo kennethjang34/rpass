@@ -320,7 +320,13 @@ pub fn get_signing_key(
     config: git2::Config,
 ) -> Result<Option<String>> {
     let signing_key = match strategy {
-        FindSigningFingerprintStrategy::GIT => config.get_string("user.signingkey")?,
+        FindSigningFingerprintStrategy::GIT => {
+            let signing_key = config
+                .get_string("user.signingkey")
+                .or(config.get_string("user.email"))
+                .ok();
+            return Ok(signing_key);
+        }
         FindSigningFingerprintStrategy::GPG => {
             let mut key_opt: Option<gpgme::Key> = None;
             for key_id in valid_gpg_signing_keys {
@@ -413,12 +419,19 @@ impl Handler {
         key_id: Option<&str>,
         error_msg: Option<String>,
     ) -> std::result::Result<String, pinentry::Error> {
-        let passphrase = if let Some(mut prompt) = PassphraseInput::with_binary("pinentry-mac") {
-            let description = format!(
+        let description = if self.request.is_some() {
+            format!(
                 "Enter passphrase of {} for {:?}",
-                key_id.unwrap_or("key id not passed"),
-                &self.request.as_ref().unwrap_or(&"no request".to_owned())
-            );
+                key_id.unwrap_or("'key id not passed'"),
+                &self.request.as_ref().unwrap()
+            )
+        } else {
+            format!(
+                "Enter passphrase of {}",
+                key_id.unwrap_or("'key id not passed'")
+            )
+        };
+        let passphrase = if let Some(mut prompt) = PassphraseInput::with_binary("pinentry-mac") {
             let prompt = prompt
                 .with_description(&description)
                 .with_prompt("Passphrase:");
@@ -429,12 +442,8 @@ impl Handler {
             }
         } else {
             if let Some(mut input) = PassphraseInput::with_default_binary() {
-                // pinentry binary is available!
                 input
-                    .with_description(&format!(
-                        "Enter passphrase for {}",
-                        key_id.unwrap_or("key id not passed")
-                    ))
+                    .with_description(&description)
                     .with_prompt("Passphrase:")
                     .interact()
             } else {

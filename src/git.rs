@@ -300,6 +300,10 @@ impl RepoExt for git2::Repository {
                 parents,   // parents
             )?;
 
+            let mut passphrase_provider = passphrase_provider.clone();
+            if let Some(ref mut passphrase_provider) = passphrase_provider {
+                passphrase_provider.request = Some("to sign commit".to_string());
+            }
             let commit_as_str = str::from_utf8(&commit_buf)?;
             let sig = crypto.sign_string(
                 commit_as_str,

@@ -22,7 +22,7 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     fmt::Debug,
-    fs,
+    fs::{self, remove_dir_all},
     fs::{create_dir_all, File},
     io::prelude::*,
     path::{Path, PathBuf},
@@ -204,44 +204,56 @@ impl PasswordStore {
             None,
         )?;
         let repo = Repository::init_git_repo(&pass_home)?;
-        if let Some(repo_signer) = signer {
-            if let Ok(mut config) = repo.config() {
+        if let Ok(mut config) = repo.config() {
+            if let Some(repo_signer) = signer {
                 let fpt = repo_signer.fingerprint.unwrap();
                 let fpt_str = hex::encode_upper(fpt);
                 config.set_str("user.name", &repo_signer.name)?;
                 config.set_str("user.email", &repo_signer.email)?;
                 config.set_str("user.signingkey", &fpt_str)?;
+            } else {
+                config.set_bool("commit.gpgsign", false)?;
             }
         }
 
-        if valid_signing_keys.len() > 0 {
-            repo.add_file(
-                &[PathBuf::from(".gpg-id"), PathBuf::from(".gpg-id.sig")],
-                "initial commit by Rpass",
-                crypto.as_ref(),
-                passphrase_provider.clone(),
-                true,
-            )?;
-        } else {
-            repo.add_file(
-                &[PathBuf::from(".gpg-id")],
-                "initial commit by Rpass",
-                crypto.as_ref(),
-                passphrase_provider.clone(),
-                true,
-            )?;
-        }
-
-        let store = Self {
-            name: store_name.to_owned(),
-            root: pass_home.canonicalize()?,
-            valid_gpg_signing_keys: valid_signing_keys,
-            passwords: [].to_vec(),
-            crypto,
-            user_home: home.clone(),
-            login_recipient: None,
+        let first_commit_res = {
+            if valid_signing_keys.len() > 0 {
+                let mut passphrase_provider = passphrase_provider.clone();
+                if let Some(ref mut passphrase_provider) = passphrase_provider {
+                    passphrase_provider.request = Some("to sign .gpg-id file".to_string());
+                }
+                repo.add_file(
+                    &[PathBuf::from(".gpg-id"), PathBuf::from(".gpg-id.sig")],
+                    "initial commit by Rpass",
+                    crypto.as_ref(),
+                    passphrase_provider,
+                    true,
+                )
+            } else {
+                repo.add_file(
+                    &[PathBuf::from(".gpg-id")],
+                    "initial commit by Rpass",
+                    crypto.as_ref(),
+                    passphrase_provider.clone(),
+                    true,
+                )
+            }
         };
-        Ok(store)
+        if let Err(e) = first_commit_res {
+            remove_dir_all(&pass_home)?;
+            Err(e)
+        } else {
+            let store = Self {
+                name: store_name.to_owned(),
+                root: pass_home.canonicalize()?,
+                valid_gpg_signing_keys: valid_signing_keys,
+                passwords: [].to_vec(),
+                crypto,
+                user_home: home.clone(),
+                login_recipient: None,
+            };
+            Ok(store)
+        }
     }
     pub fn remove_entry(&mut self, id: &str) -> pass::Result<PasswordEntry> {
         let id = if let Ok(uuid) = uuid::Uuid::parse_str(id) {
@@ -712,7 +724,7 @@ impl PasswordStore {
             return Err(Error::Generic("file already exist"));
         }
 
-        match self.new_password_file_internal(&path, path_end, content, passphrase_provider) {
+        match self.new_password_file_internal(&path, path_end, content, passphrase_provider, true) {
             Ok(pe) => Ok(pe),
             Err(err) => {
                 // try to remove the file we created, as cleanup
@@ -730,6 +742,7 @@ impl PasswordStore {
         path_end: &str,
         content: &str,
         passphrase_provider: Option<Handler>,
+        should_commit: bool,
     ) -> Result<PasswordEntry> {
         let mut file = File::create(path)?;
 
@@ -762,7 +775,7 @@ impl PasswordStore {
                     &message,
                     self.crypto.as_ref(),
                     passphrase_provider,
-                    true,
+                    should_commit,
                 )?;
 
                 self.passwords
