@@ -54,13 +54,3 @@ criterion = "0.4.0"
 
 [workspace]
 exclude=["./browser-extension"]
-
-# [[bench]]
-# name = "library_benchmark"
-# harness = false
-
-# [profile.release]
-# lto = true
-# codegen-units = 1
-# strip = true
-# debug = false
