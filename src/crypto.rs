@@ -1,6 +1,6 @@
 use log::*;
 use pinentry::PassphraseInput;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashMap,
     ffi::CStr,
@@ -345,11 +345,9 @@ pub fn get_signing_key(
     };
     return Ok(Some(signing_key));
 }
-// unsafe impl Sync for PassphraseProvider {}
-// unsafe impl Send for PassphraseProvider {}
 #[derive(Debug)]
 pub struct Handler {
-    pub passphrases: Arc<RwLock<HashMap<String, String>>>,
+    pub passphrases: Arc<RwLock<HashMap<String, SecretString>>>,
     pub last_tried_key_user_id_hint: Arc<Mutex<Option<String>>>,
     pub recipient_to_user_id_hint: Arc<Mutex<HashMap<String, String>>>,
     pub request: Option<String>,
@@ -359,7 +357,7 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub fn new(passphrases: Arc<RwLock<HashMap<String, String>>>) -> Self {
+    pub fn new(passphrases: Arc<RwLock<HashMap<String, SecretString>>>) -> Self {
         Handler {
             passphrases,
             last_tried_key_user_id_hint: Arc::new(Mutex::new(None)),
@@ -538,7 +536,7 @@ impl gpgme::PassphraseProvider for Handler {
             if let Some(user_id_hint) = user_id_hint {
                 let res = if let Ok(locked) = read_lock {
                     let passphrase = if let Some(passphrase) = locked.get(&user_id_hint) {
-                        Ok(passphrase.to_owned())
+                        Ok(passphrase.expose_secret().to_owned())
                     } else {
                         let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
                         let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
@@ -560,10 +558,11 @@ impl gpgme::PassphraseProvider for Handler {
                     })
                 };
                 if res.is_ok() {
+                    let secret = SecretString::new(res.as_ref().unwrap().to_owned());
                     self.passphrases
                         .write()
                         .unwrap()
-                        .insert(user_id_hint, res.as_ref().unwrap().to_owned());
+                        .insert(user_id_hint, secret);
                 }
                 res
             } else {

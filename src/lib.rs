@@ -19,3 +19,4 @@ pub mod words;
 #[cfg(test)]
 #[path = "tests/test_helpers.rs"]
 pub mod test_helpers;
+pub use secrecy;

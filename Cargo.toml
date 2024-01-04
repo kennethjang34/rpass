@@ -35,7 +35,7 @@ fern = {version="0.6.2", features=["colored"]}
 serde_json = "1.0.96"
 array_tool = "1.0.3"
 pinentry = "0.5.0"
-secrecy = "0.8.0"
+secrecy = {version="0.8.0",features=["serde"]}
 gpgme-sys = "0.11.0"
 libc = "0.2.151"
 
