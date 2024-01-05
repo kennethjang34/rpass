@@ -429,7 +429,8 @@ impl Handler {
                 key_id.unwrap_or("'key id not passed'")
             )
         };
-        let passphrase = if let Some(mut prompt) = PassphraseInput::with_binary("pinentry-mac") {
+        let pinentry = std::env::var("PINENTRY_PATH").unwrap_or("pinentry".to_string());
+        let passphrase = if let Some(mut prompt) = PassphraseInput::with_binary(pinentry) {
             let prompt = prompt
                 .with_description(&description)
                 .with_prompt("Passphrase:");
