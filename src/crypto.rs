@@ -445,19 +445,23 @@ impl From<&mut Handler> for ContextWithCallbacks<'_> {
 impl Handler {
     fn prompt_pinentry(
         &mut self,
-        key_id: Option<&str>,
+        recipient: Option<Recipient>,
         error_msg: Option<String>,
     ) -> std::result::Result<String, pinentry::Error> {
         let description = if self.request.is_some() {
             format!(
                 "Enter passphrase of {} for {:?}",
-                key_id.unwrap_or("'key id not passed'"),
+                recipient
+                    .map(|r| { format!("{} <{}> <{}>", r.name.clone(), r.email.clone(), r.key_id) })
+                    .unwrap_or("???".to_string()),
                 &self.request.as_ref().unwrap()
             )
         } else {
             format!(
                 "Enter passphrase of {}",
-                key_id.unwrap_or("'key id not passed'")
+                recipient
+                    .map(|r| { format!("{} <{}> <{}>", r.name.clone(), r.email.clone(), r.key_id) })
+                    .unwrap_or("???".to_string()),
             )
         };
         let pinentry = std::env::var("PINENTRY_PATH").unwrap_or("pinentry".to_string());
@@ -539,16 +543,20 @@ impl gpgme::PassphraseProvider for Handler {
         out: &mut dyn std::io::Write,
     ) -> gpgme::error::Result<()> {
         let mut user_id_hint = request.user_id_hint().map(|s| s.to_string()).ok();
+        let mut recipient = None;
         if let Some(user_id_hint) = user_id_hint.as_mut() {
             let mut user_id_hint_iter = user_id_hint.split(" ");
             let next_hint = user_id_hint_iter.next();
             if let Some(next_hint) = next_hint {
                 *user_id_hint = next_hint.to_string();
-                if let Some(ref recipient) = self.last_tried_recipient.lock().unwrap().as_ref() {
+                if let Some(last_tried_recipient) =
+                    self.last_tried_recipient.lock().unwrap().as_ref()
+                {
+                    recipient = Some(last_tried_recipient.clone());
                     self.recipient_to_user_id_hint
                         .lock()
                         .unwrap()
-                        .insert(recipient.key_id.clone(), user_id_hint.clone());
+                        .insert(last_tried_recipient.key_id.clone(), user_id_hint.clone());
                 }
             }
         }
@@ -577,7 +585,7 @@ impl gpgme::PassphraseProvider for Handler {
                                 out.write_all(&[])?;
                                 return Ok(());
                             }
-                            let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
+                            let res = self.prompt_pinentry(recipient, err_msg);
                             res.map_err(|e| {
                                 error!("failed to prompt pinentry: {:?}", e);
                                 gpgme::error::Error::PIN_ENTRY
@@ -593,7 +601,7 @@ impl gpgme::PassphraseProvider for Handler {
                             out.write_all(&[])?;
                             return Ok(());
                         }
-                        let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
+                        let res = self.prompt_pinentry(recipient, err_msg);
                         res.map_err(|e| {
                             error!("failed to prompt pinentry: {:?}", e);
                             gpgme::error::Error::PIN_ENTRY
