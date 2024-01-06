@@ -820,6 +820,11 @@ impl Crypto for GpgMe {
                             return Ok(Some(recipient.clone()));
                         }
                         Err(e) => match gpgme::Error::from_code(e.code()) {
+                            gpgme::Error::NO_ERROR => {
+                                *passphrase_provider.failure_count.lock().unwrap() = 0;
+                                passphrase_provider.err_msg.lock().unwrap().take();
+                                return Ok(Some(recipient.clone()));
+                            }
                             gpgme::Error::BAD_PASSPHRASE => {
                                 *(passphrase_provider.err_msg.clone().lock().unwrap()) = Some(
                                     format!("Wrong passphrase, {} tries left", max_tries - 1 - i),

@@ -137,8 +137,8 @@ impl PasswordStore {
         Ok(store)
     }
 
-    pub fn set_login_recipient(&mut self, recipient: Recipient) {
-        self.login_recipient = Some(recipient);
+    pub fn set_login_recipient(&mut self, recipient: Option<Recipient>) {
+        self.login_recipient = recipient;
     }
     pub fn get_login_recipient(&self) -> Option<&Recipient> {
         self.login_recipient.as_ref()
@@ -1142,7 +1142,7 @@ impl PasswordStore {
                 .try_passphrases(&self.all_recipients()?, passphrase_provider, Some(3));
         if let Ok(login_recipient_opt) = res {
             if let Some(login_recipient) = login_recipient_opt {
-                self.set_login_recipient(login_recipient);
+                self.set_login_recipient(Some(login_recipient));
                 return Ok(true);
             } else {
                 return Ok(false);
