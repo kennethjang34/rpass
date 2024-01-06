@@ -296,6 +296,7 @@ impl Clone for Handler {
             recipient_to_user_id_hint: self.recipient_to_user_id_hint.clone(),
             failure_count: self.failure_count.clone(),
             err_msg: self.err_msg.clone(),
+            use_only_cached: self.use_only_cached.clone(),
         }
     }
 }
@@ -309,6 +310,7 @@ impl Default for Handler {
             last_tried_recipient: Arc::new(Mutex::new(None)),
             failure_count: Arc::new(Mutex::new(0)),
             err_msg: Arc::new(Mutex::new(None)),
+            use_only_cached: Arc::new(RwLock::new(false)),
         }
     }
 }
@@ -354,6 +356,12 @@ pub struct Handler {
     pub last_tried_recipient: Arc<Mutex<Option<Recipient>>>,
     pub failure_count: Arc<Mutex<u8>>,
     pub err_msg: Arc<Mutex<Option<String>>>,
+    use_only_cached: Arc<RwLock<bool>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PassphraseProviderFlag {
+    UseOnlyCached,
 }
 
 impl Handler {
@@ -366,6 +374,7 @@ impl Handler {
             last_tried_recipient: Arc::new(Mutex::new(None)),
             failure_count: Arc::new(Mutex::new(0)),
             err_msg: Arc::new(Mutex::new(None)),
+            use_only_cached: Arc::new(RwLock::new(false)),
         }
     }
     pub fn create_context<'a, 'b>(&'a mut self) -> gpgme::Result<gpgme::ContextWithCallbacks<'b>> {
@@ -401,6 +410,28 @@ impl Handler {
             }
         } else {
             write_lock.remove(key_id);
+        }
+        return Ok(());
+    }
+    pub fn set_flag(&mut self, flag: PassphraseProviderFlag) -> Result<()> {
+        match flag {
+            PassphraseProviderFlag::UseOnlyCached => {
+                let mut write_lock = self.use_only_cached.write().map_err(|e| {
+                    Error::GenericDyn(format!("failed to lock use_only_cached. {:?}", e))
+                })?;
+                *write_lock = true;
+            }
+        }
+        return Ok(());
+    }
+    pub fn remove_flag(&mut self, flag: PassphraseProviderFlag) -> Result<()> {
+        match flag {
+            PassphraseProviderFlag::UseOnlyCached => {
+                let mut write_lock = self.use_only_cached.write().map_err(|e| {
+                    Error::GenericDyn(format!("failed to lock use_only_cached. {:?}", e))
+                })?;
+                *write_lock = false;
+            }
         }
         return Ok(());
     }
@@ -525,6 +556,7 @@ impl gpgme::PassphraseProvider for Handler {
             let mut locked = self.last_tried_key_user_id_hint.lock().unwrap();
             locked.replace(user_id_hint.clone());
         }
+        let use_only_cached = *self.use_only_cached.read().unwrap();
         let passphrase = {
             if request.prev_attempt_failed && user_id_hint.is_some() {
                 self.passphrases
@@ -535,28 +567,38 @@ impl gpgme::PassphraseProvider for Handler {
             let passphrases = self.passphrases.clone();
             let read_lock = passphrases.read();
             if let Some(user_id_hint) = user_id_hint {
-                let res = if let Ok(locked) = read_lock {
-                    let passphrase = if let Some(passphrase) = locked.get(&user_id_hint) {
-                        Ok(passphrase.expose_secret().to_owned())
+                let res = {
+                    if let Ok(locked) = read_lock {
+                        let passphrase = if let Some(passphrase) = locked.get(&user_id_hint) {
+                            Ok(passphrase.expose_secret().to_owned())
+                        } else {
+                            let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
+                            if use_only_cached {
+                                out.write_all(&[])?;
+                                return Ok(());
+                            }
+                            let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
+                            res.map_err(|e| {
+                                error!("failed to prompt pinentry: {:?}", e);
+                                gpgme::error::Error::PIN_ENTRY
+                            })
+                        };
+                        drop(locked);
+                        passphrase
                     } else {
+                        error!("failed to lock lock passphrase cache. {:?}", read_lock);
+                        drop(read_lock);
                         let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
+                        if use_only_cached {
+                            out.write_all(&[])?;
+                            return Ok(());
+                        }
                         let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
                         res.map_err(|e| {
                             error!("failed to prompt pinentry: {:?}", e);
                             gpgme::error::Error::PIN_ENTRY
                         })
-                    };
-                    drop(locked);
-                    passphrase
-                } else {
-                    error!("failed to lock lock passphrase cache. {:?}", read_lock);
-                    drop(read_lock);
-                    let err_msg = self.err_msg.clone().lock().unwrap().to_owned();
-                    let res = self.prompt_pinentry(Some(&user_id_hint), err_msg);
-                    res.map_err(|e| {
-                        error!("failed to prompt pinentry: {:?}", e);
-                        gpgme::error::Error::PIN_ENTRY
-                    })
+                    }
                 };
                 if res.is_ok() {
                     let secret = SecretString::new(res.as_ref().unwrap().to_owned());
@@ -567,6 +609,10 @@ impl gpgme::PassphraseProvider for Handler {
                 }
                 res
             } else {
+                if use_only_cached {
+                    out.write_all(&[])?;
+                    return Ok(());
+                }
                 let res = self.prompt_pinentry(None, None);
                 res.map_err(|e| {
                     error!("failed to prompt pinentry: {:?}", e);
@@ -598,7 +644,7 @@ impl Crypto for GpgMe {
         let mut passphrase_provider = passphrase_provider.unwrap_or_default();
         let mut output = Vec::new();
         let mut ctx = passphrase_provider.create_context()?;
-        ctx.decrypt(ciphertext, &mut output)?;
+        ctx.decrypt(ciphertext, &mut output).unwrap();
         return Ok(String::from_utf8(output)?);
     }
 
@@ -821,9 +867,7 @@ impl Crypto for GpgMe {
                         }
                         Err(e) => match gpgme::Error::from_code(e.code()) {
                             gpgme::Error::NO_ERROR => {
-                                *passphrase_provider.failure_count.lock().unwrap() = 0;
-                                passphrase_provider.err_msg.lock().unwrap().take();
-                                return Ok(Some(recipient.clone()));
+                                continue;
                             }
                             gpgme::Error::BAD_PASSPHRASE => {
                                 *(passphrase_provider.err_msg.clone().lock().unwrap()) = Some(

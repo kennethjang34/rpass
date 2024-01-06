@@ -1501,7 +1501,24 @@ impl PasswordEntry {
         }
 
         let content = fs::read(&self.file_path)?;
-        store.crypto.decrypt_string(&content, passphrase_provider)
+        if passphrase_provider.is_none() {
+            store.crypto.decrypt_string(&content, passphrase_provider)
+        } else {
+            {
+                let mut passphrase_provider2 = passphrase_provider.clone().unwrap();
+                passphrase_provider2
+                    .set_flag(crate::crypto::PassphraseProviderFlag::UseOnlyCached)?;
+            }
+            let res = store
+                .crypto
+                .decrypt_string(&content, passphrase_provider.clone());
+            {
+                let mut passphrase_provider2 = passphrase_provider.clone().unwrap();
+                passphrase_provider2
+                    .remove_flag(crate::crypto::PassphraseProviderFlag::UseOnlyCached)?;
+                res
+            }
+        }
     }
 
     /// Decrypts and returns the first line of the `PasswordEntry`
