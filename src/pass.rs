@@ -196,50 +196,57 @@ impl PasswordStore {
             };
 
         create_dir_all(&pass_home)?;
-        Recipient::write_recipients_file(
-            recipients,
-            &pass_home.join(".gpg-id"),
-            &valid_signing_keys,
-            crypto.as_ref(),
-            None,
-        )?;
-        let repo = Repository::init_git_repo(&pass_home)?;
-        if let Ok(mut config) = repo.config() {
-            if let Some(repo_signer) = signer {
-                let fpt = repo_signer.fingerprint.unwrap();
-                let fpt_str = hex::encode_upper(fpt);
-                config.set_str("user.name", &repo_signer.name)?;
-                config.set_str("user.email", &repo_signer.email)?;
-                config.set_str("user.signingkey", &fpt_str)?;
-            } else {
-                config.set_bool("commit.gpgsign", false)?;
+        let res = {
+            let recipient_file_res = Recipient::write_recipients_file(
+                recipients,
+                &pass_home.join(".gpg-id"),
+                &valid_signing_keys,
+                crypto.as_ref(),
+                passphrase_provider.clone(),
+            );
+            if let Err(e) = recipient_file_res {
+                remove_dir_all(&pass_home)?;
+                return Err(e);
             }
-        }
-
-        let first_commit_res = {
-            if valid_signing_keys.len() > 0 {
-                let mut passphrase_provider = passphrase_provider.clone();
-                if let Some(ref mut passphrase_provider) = passphrase_provider {
-                    passphrase_provider.request = Some("to sign .gpg-id file".to_string());
+            let repo = Repository::init_git_repo(&pass_home)?;
+            if let Ok(mut config) = repo.config() {
+                if let Some(repo_signer) = signer {
+                    let fpt = repo_signer.fingerprint.unwrap();
+                    let fpt_str = hex::encode_upper(fpt);
+                    config.set_str("user.name", &repo_signer.name)?;
+                    config.set_str("user.email", &repo_signer.email)?;
+                    config.set_str("user.signingkey", &fpt_str)?;
+                } else {
+                    config.set_bool("commit.gpgsign", false)?;
                 }
-                repo.add_file(
-                    &[PathBuf::from(".gpg-id"), PathBuf::from(".gpg-id.sig")],
-                    "initial commit by Rpass",
-                    crypto.as_ref(),
-                    passphrase_provider,
-                    true,
-                )
-            } else {
-                repo.add_file(
-                    &[PathBuf::from(".gpg-id")],
-                    "initial commit by Rpass",
-                    crypto.as_ref(),
-                    passphrase_provider.clone(),
-                    true,
-                )
             }
+
+            let first_commit_res = {
+                if valid_signing_keys.len() > 0 {
+                    let mut passphrase_provider = passphrase_provider.clone();
+                    if let Some(ref mut passphrase_provider) = passphrase_provider {
+                        passphrase_provider.request = Some("to sign .gpg-id file".to_string());
+                    }
+                    repo.add_file(
+                        &[PathBuf::from(".gpg-id"), PathBuf::from(".gpg-id.sig")],
+                        "initial commit by Rpass",
+                        crypto.as_ref(),
+                        passphrase_provider,
+                        true,
+                    )
+                } else {
+                    repo.add_file(
+                        &[PathBuf::from(".gpg-id")],
+                        "initial commit by Rpass",
+                        crypto.as_ref(),
+                        passphrase_provider.clone(),
+                        true,
+                    )
+                }
+            };
+            first_commit_res
         };
-        if let Err(e) = first_commit_res {
+        if let Err(e) = res {
             remove_dir_all(&pass_home)?;
             Err(e)
         } else {
