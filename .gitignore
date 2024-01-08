@@ -3,3 +3,5 @@ benches
 testres
 .vim
 .DS_Store
+videos
+demo_prep.sh
