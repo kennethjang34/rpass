@@ -7,26 +7,11 @@ Password manager with browser extension that helps users manage their secrets by
 - Securely store user-ids, passwords, notes, associated domains(urls) in a user-selected 'store'
 - A store coupub-keys/user-ids for encryption, which is useful in team environment
 - Multiple password store support
-- Stateful browser extension for currently available stores/passwords
-- Auto-suggestion for user-id/password input fieldsld have multiple 
+- Stateful browser extension for currently available stores/passwords with [Browser Rpass](https://github.com/kennethjang34/browser-rpass)
+- Auto-suggestion for user-id/password input fieldsld have multiple
 
 ## Installation
-
-Currently, only works on OSX and Linux, firefox and chrome (chromium users should be able to use them but would have to do extra configuration for native host. [Google has docs for it.](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)
-
-### Required dependencies
-
-- [Rust](https://www.rust-lang.org/tools/install)
-- [wasm-pack](https://github.com/rustwasm/wasm-pack)
-- [Trunk](https://trunkrs.dev/)
-- GPG key that's capable of signing and encrypting. If you don't have GPG executables installed, take a look at [GPG official documentation](https://gnupg.org/documentation/index.html)
-- Stand-alone launchable pin entry program like `pinentry-mac` on OSX
-
-### Build script
-
-Given you have the required dependencies available, you should be able to install through the provided build script. You can run `build.sh` included.
-Default browser is set to Chrome. If you'd like to use firefox, add "-b firefox".
-
+Check [Browser Rpass's readme.md](https://github.com/kennethjang34/browser-rpass)
 
 ## Demo video(s)
 
