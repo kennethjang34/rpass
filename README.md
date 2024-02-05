@@ -13,7 +13,7 @@ Password manager with browser extension that helps users manage their secrets by
 ## Installation
 Check [Browser Rpass's readme.md](https://github.com/kennethjang34/browser-rpass)
 
-## Demo video(s)
+## Demo videos of Rpass + Browser Rpass
 
 ### Installation
 https://github.com/kennethjang34/browser-rpass/assets/89117160/1dbe4af7-cf63-4ed9-887b-aa4aa59687c7
