@@ -18,7 +18,7 @@ use super::pass;
 use git2::Repository;
 use log::*;
 use serde::{de::Error as serde_err, ser::SerializeStruct, Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -313,9 +313,12 @@ impl PasswordStore {
         note: Option<&str>,
         custom_fields: Option<&serde_json::Map<String, serde_json::Value>>,
         passphrase_provider: Option<Handler>,
-    ) -> pass::Result<serde_json::Value> {
+    ) -> pass::Result<Value> {
         let id = id.to_string();
         let mut json = serde_json::Map::<String, serde_json::Value>::new();
+        // TODO replace json with Vec<UpdateLog>. update log struct currently defined in browser
+        // rpass so cannot be imported directly here yet.
+        // let mut updat_logs = Vec::<String>::new();
         if let Some(new_name) = new_name {
             json.insert(
                 "username".to_string(),
