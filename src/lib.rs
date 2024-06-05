@@ -1,8 +1,6 @@
 //! This implements a handling of a pass directory compatible with <https://www.passwordstore.org/> .
 //! The encryption is handled by `GPGme` or `sequoia` and the git integration is with libgit2.
 
-#[cfg(feature = "api")]
-pub mod api;
 /// This is the library part that handles all encryption and decryption
 #[cfg(feature = "default")]
 pub mod crypto;
@@ -12,6 +10,9 @@ pub(crate) mod error;
 /// All git related operations.
 #[cfg(feature = "default")]
 pub mod git;
+
+#[cfg(any(feature = "default", feature = "interface"))]
+pub mod interface;
 /// This is the library part of ripasso, it implements the functions needed to manipulate a pass
 /// directory.
 #[cfg(feature = "default")]

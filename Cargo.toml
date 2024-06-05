@@ -12,14 +12,18 @@ edition = '2021'
 crate-type = ["rlib", "cdylib"]
 
 
+[features]
+default = ["dep:gpgme","dep:git2", "dep:pinentry"]
+interface=[]
+
 [dependencies]
 glob = "0.3.1"
-gpgme = "0.11.0"
-chrono = { version = "0.4.24", features = ["serde"] }
-git2 = "0.17.1"
+gpgme = {version="0.11.0", optional=true}
+chrono = { version = "0.4.24", features = ["serde"]}
+git2 = {version="0.17.1", optional=true}
 rand = "0.8.5"
 whoami = "1.4.0"
-toml = "0.7.3"
+toml = {version="0.7.3"}
 reqwest = { version = "0.11.17", features = ["blocking"] }
 hex = "0.4.3"
 totp-rs = { version = "5.0.1", features = ["otpauth"] }
@@ -34,10 +38,11 @@ uuid = {version="1.6.1", features = ["serde","v4","macro-diagnostics"]}
 fern = {version="0.6.2", features=["colored"]}
 serde_json = "1.0.96"
 array_tool = "1.0.3"
-pinentry = "0.5.0"
+pinentry = {version="0.5.0", optional=true}
 secrecy = {version="0.8.0",features=["serde"]}
-gpgme-sys = "0.11.0"
-libc = "0.2.151"
+gpgme-sys = {version="0.11.0", optional=true}
+libc = {version="0.2.151"}
+serde_variant = "0.1.2"
 
 [dependencies.config]
 version = "0.11.0"
