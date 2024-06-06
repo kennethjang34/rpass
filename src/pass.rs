@@ -13,12 +13,11 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-
 use super::pass;
+use crate::interface::DataFieldType;
 use git2::Repository;
 use log::*;
 use serde::{de::Error as serde_err, ser::SerializeStruct, Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -37,6 +36,7 @@ use totp_rs::TOTP;
 use crate::{
     crypto::{Crypto, CryptoImpl, GpgMe, Handler, VerificationError},
     git::*,
+    interface::UpdateLog,
 };
 pub use crate::{
     error::{to_result, Error, Result},
@@ -313,12 +313,9 @@ impl PasswordStore {
         note: Option<&str>,
         custom_fields: Option<&serde_json::Map<String, serde_json::Value>>,
         passphrase_provider: Option<Handler>,
-    ) -> pass::Result<Value> {
+    ) -> pass::Result<Vec<UpdateLog>> {
         let id = id.to_string();
         let mut json = serde_json::Map::<String, serde_json::Value>::new();
-        // TODO replace json with Vec<UpdateLog>. update log struct currently defined in browser
-        // rpass so cannot be imported directly here yet.
-        // let mut updat_logs = Vec::<String>::new();
         if let Some(new_name) = new_name {
             json.insert(
                 "username".to_string(),
@@ -359,10 +356,12 @@ impl PasswordStore {
         id: &str,
         content: serde_json::Value,
         passphrase_provider: Option<Handler>,
-    ) -> pass::Result<serde_json::Value> {
+        // ) -> pass::Result<serde_json::Value> {
+    ) -> pass::Result<Vec<UpdateLog>> {
         let entry = self.get_entry(&id)?;
         let secret = entry.secret(self, passphrase_provider.clone())?;
-        let mut updated_values = serde_json::Map::<String, serde_json::Value>::new();
+        // let mut updated_values = serde_json::Map::<String, serde_json::Value>::new();
+        let mut update_logs = Vec::<UpdateLog>::new();
         if let Ok(mut previous) = serde_json::from_str::<serde_json::Value>(&secret) {
             let entry_data = previous
                 .as_object_mut()
@@ -373,7 +372,12 @@ impl PasswordStore {
             {
                 if let Some(old) = entry_data.get(key).cloned() {
                     if &old != value {
-                        updated_values.insert(key.to_string(), json!({"old":old,"new":value}));
+                        // updated_values.insert(key.to_string(), json!({"old":old,"new":value}));
+                        update_logs.push(UpdateLog::new(
+                            DataFieldType::from(key),
+                            old,
+                            value.clone(),
+                        ));
                     }
                 }
                 entry_data.insert(key.to_string(), value.clone());
@@ -385,7 +389,8 @@ impl PasswordStore {
                 .overwrite_entry_file(&id, serialized, passphrase_provider.clone())
                 .is_ok()
             {
-                Ok(updated_values.into())
+                // Ok(updated_values.into())
+                Ok(update_logs)
             } else {
                 Err(pass::Error::Generic("Failed to update entry content"))
             }

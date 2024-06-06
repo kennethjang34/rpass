@@ -57,7 +57,7 @@ pub enum DataFieldType {
     ErrorCode,
     ErrorSource,
     Update,
-    UpdatedFields,
+    UpdateLog,
     Delete,
     Create,
     Search,
@@ -76,16 +76,34 @@ impl fmt::Display for DataFieldType {
         write!(f, "{}", to_variant_name(&self).unwrap())
     }
 }
-
-impl From<Value> for DataFieldType {
-    fn from(value: Value) -> Self {
+impl DataFieldType {
+    pub fn to_string(&self) -> String {
+        format!("{}", self)
+    }
+    pub fn from_json_value(value: Value) -> Self {
         let s = value.as_str().unwrap();
         serde_json::from_str(s).unwrap()
     }
 }
+
+impl<T> From<T> for DataFieldType
+where
+    T: AsRef<str>,
+{
+    fn from(value: T) -> Self {
+        serde_json::from_str(value.as_ref()).unwrap()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateLog {
     pub field: DataFieldType,
     pub old: Value,
     pub new: Value,
+}
+
+impl UpdateLog {
+    pub fn new(field: DataFieldType, old: Value, new: Value) -> Self {
+        UpdateLog { field, old, new }
+    }
 }
