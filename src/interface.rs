@@ -1,12 +1,14 @@
-use core::fmt;
-use serde_variant::to_variant_name;
+use std::fmt::Debug;
+use strum_macros::EnumString;
 
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use strum_macros::Display;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Display, EnumString)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum DataFieldType {
     PortID,
     Meta,
@@ -71,29 +73,19 @@ pub enum DataFieldType {
     StoreIDList,
     ParentStoreId,
 }
-impl fmt::Display for DataFieldType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", to_variant_name(&self).unwrap())
-    }
-}
-impl DataFieldType {
-    pub fn to_string(&self) -> String {
-        format!("{}", self)
-    }
-    pub fn from_json_value(value: Value) -> Self {
-        let s = value.as_str().unwrap();
-        serde_json::from_str(s).unwrap()
-    }
-}
 
-impl<T> From<T> for DataFieldType
-where
-    T: AsRef<str>,
-{
-    fn from(value: T) -> Self {
-        serde_json::from_str(value.as_ref()).unwrap()
-    }
-}
+// impl fmt::Display for DataFieldType {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         write!(f, "{}", serde_json::to_string(&self).unwrap())
+//     }
+// }
+
+// impl<T> From<T> for DataFieldType
+// where
+//     T: AsRef<str> + Debug,
+// {
+//     fn from(value: T) -> Self {}
+// }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateLog {

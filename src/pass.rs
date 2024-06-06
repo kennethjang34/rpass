@@ -356,11 +356,9 @@ impl PasswordStore {
         id: &str,
         content: serde_json::Value,
         passphrase_provider: Option<Handler>,
-        // ) -> pass::Result<serde_json::Value> {
     ) -> pass::Result<Vec<UpdateLog>> {
         let entry = self.get_entry(&id)?;
         let secret = entry.secret(self, passphrase_provider.clone())?;
-        // let mut updated_values = serde_json::Map::<String, serde_json::Value>::new();
         let mut update_logs = Vec::<UpdateLog>::new();
         if let Ok(mut previous) = serde_json::from_str::<serde_json::Value>(&secret) {
             let entry_data = previous
@@ -372,9 +370,8 @@ impl PasswordStore {
             {
                 if let Some(old) = entry_data.get(key).cloned() {
                     if &old != value {
-                        // updated_values.insert(key.to_string(), json!({"old":old,"new":value}));
                         update_logs.push(UpdateLog::new(
-                            DataFieldType::from(key),
+                            DataFieldType::from_str(key).unwrap(),
                             old,
                             value.clone(),
                         ));
@@ -389,7 +386,6 @@ impl PasswordStore {
                 .overwrite_entry_file(&id, serialized, passphrase_provider.clone())
                 .is_ok()
             {
-                // Ok(updated_values.into())
                 Ok(update_logs)
             } else {
                 Err(pass::Error::Generic("Failed to update entry content"))
